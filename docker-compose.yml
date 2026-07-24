@@ -1,0 +1,61 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pdtc
+      POSTGRES_USER: pdtc
+      POSTGRES_PASSWORD: pdtc
+    ports:
+      # Host 5433 -> container 5432 (host 5432 is often already in use; the app
+      # itself reaches Postgres over the internal network as db:5432).
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pdtc -d pdtc"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # Runs drizzle migrations once against a healthy db, then exits.
+  migrate:
+    build:
+      context: .
+      target: builder
+    command: ["npm", "run", "db:migrate"]
+    environment:
+      DATABASE_URL: postgres://pdtc:pdtc@db:5432/pdtc
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    build:
+      context: .
+    ports:
+      # Host 5080 -> container 5000 (host 5000 is often already in use).
+      - "5080:5000"
+    environment:
+      DATABASE_URL: postgres://pdtc:pdtc@db:5432/pdtc
+      PORT: "5000"
+      NODE_ENV: production
+      # This compose runs on plain HTTP; set true when serving over HTTPS.
+      COOKIE_SECURE: "false"
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    volumes:
+      - uploads_data:/app/uploads
+
+volumes:
+  postgres_data:
+  uploads_data:

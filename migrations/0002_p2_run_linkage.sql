@@ -1,0 +1,1 @@
+ALTER TABLE "engine_runs" ADD COLUMN "previous_run_id" integer;

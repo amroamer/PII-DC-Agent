@@ -1,0 +1,26 @@
+node_modules/
+dist/
+uploads/
+*.local
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test / tooling output
+coverage/
+playwright-report/
+test-results/
+.vitest/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+Thumbs.db
