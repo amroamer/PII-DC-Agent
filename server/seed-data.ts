@@ -157,6 +157,52 @@ export const SEED_DATA_CLASSES: CachedDataClass[] = [
     source: "adc",
     active: true,
   },
+  // Financial personal data. Per the WoG Classification Framework, financial data
+  // is Confidential (not Sensitive) — so isPii, but NOT special-category.
+  {
+    code: "BANK_ACCOUNT_NO",
+    nameEn: "Bank Account Number",
+    nameAr: "رقم الحساب المصرفي",
+    category: "financial",
+    isPii: true,
+    isSpecialCategory: false,
+    detectionHints: ["bank account", "account number", "account no", "acct", "الحساب", "رقم الحساب", "الحساب المصرفي"],
+    source: "adc",
+    active: true,
+  },
+  {
+    code: "IBAN",
+    nameEn: "IBAN",
+    nameAr: "رقم الآيبان",
+    category: "financial",
+    isPii: true,
+    isSpecialCategory: false,
+    detectionHints: ["iban", "international bank account number", "آيبان", "الآيبان"],
+    source: "adc",
+    active: true,
+  },
+  {
+    code: "PAYMENT_CARD_NO",
+    nameEn: "Payment Card Number",
+    nameAr: "رقم بطاقة الدفع",
+    category: "financial",
+    isPii: true,
+    isSpecialCategory: false,
+    detectionHints: ["credit card", "debit card", "card number", "card no", "pan", "بطاقة", "بطاقة ائتمان", "رقم البطاقة"],
+    source: "adc",
+    active: true,
+  },
+  {
+    code: "SALARY",
+    nameEn: "Salary / Income",
+    nameAr: "الراتب / الدخل",
+    category: "financial",
+    isPii: true,
+    isSpecialCategory: false,
+    detectionHints: ["salary", "income", "wage", "compensation", "payroll", "راتب", "الدخل", "الأجر"],
+    source: "ikc",
+    active: true,
+  },
 ];
 
 export const SEED_APP_SETTINGS: Array<{ key: string; value: unknown }> = [

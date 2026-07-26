@@ -6,7 +6,8 @@
 import { eq } from "drizzle-orm";
 import { db } from "../db";
 import { assets, attributes, type Attribute } from "@shared/models/schema";
-import { getClassificationRules, getDataClasses } from "../reference-cache";
+import { getDataClasses } from "../reference-cache";
+import { getActiveClassificationRules } from "../frameworks/store";
 import { getLatestRunId, getResults } from "../pii-engine/results";
 import { classifyByRules } from "./attribute-rules";
 import { rollupAssetLevel, type AttrLevel } from "./rollup";
@@ -30,7 +31,7 @@ export async function runClassification(runId?: string): Promise<ClassificationR
 
   const attrRows = await db.select().from(attributes);
   const attrMap = new Map<number, Attribute>(attrRows.map((a) => [a.id, a]));
-  const rules = getClassificationRules();
+  const rules = await getActiveClassificationRules();
   const specialCodes = new Set(getDataClasses().filter((d) => d.isSpecialCategory).map((d) => d.code));
 
   const levelsByAsset = new Map<number, AttrLevel[]>();

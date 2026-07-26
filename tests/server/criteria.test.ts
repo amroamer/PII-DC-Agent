@@ -38,12 +38,12 @@ describe("criterion mapping (intrinsic layers)", () => {
 });
 
 describe("classification rule table (first-match-wins)", () => {
-  it("classifies special category as SECRET regardless of criterion", () => {
+  it("classifies special category as SENSITIVE regardless of criterion", () => {
     const result = classifyByRules(
       { verdict: "pii", criterion: "DIRECT_ID", isSpecialCategory: true, existingLevel: null },
       DEFAULT_CLASSIFICATION_RULES,
     );
-    expect(result.level).toBe("SECRET");
+    expect(result.level).toBe("SENSITIVE");
   });
 
   it("classifies a direct identifier as CONFIDENTIAL", () => {
@@ -54,19 +54,19 @@ describe("classification rule table (first-match-wins)", () => {
     expect(result.level).toBe("CONFIDENTIAL");
   });
 
-  it("classifies non-PII as PUBLIC", () => {
+  it("classifies non-PII as CONFIDENTIAL (framework default for all data)", () => {
     const result = classifyByRules(
       { verdict: "not_pii", criterion: null, isSpecialCategory: false, existingLevel: null },
       DEFAULT_CLASSIFICATION_RULES,
     );
-    expect(result.level).toBe("PUBLIC");
+    expect(result.level).toBe("CONFIDENTIAL");
   });
 
   it("never downgrades below the existing IKC classification floor", () => {
     const result = classifyByRules(
-      { verdict: "not_pii", criterion: null, isSpecialCategory: false, existingLevel: "CONFIDENTIAL" },
+      { verdict: "not_pii", criterion: null, isSpecialCategory: false, existingLevel: "SECRET" },
       DEFAULT_CLASSIFICATION_RULES,
     );
-    expect(result.level).toBe("CONFIDENTIAL");
+    expect(result.level).toBe("SECRET");
   });
 });

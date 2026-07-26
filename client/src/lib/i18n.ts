@@ -9,10 +9,8 @@ export const STRINGS: Record<string, { en: string; ar: string }> = {
   "app.short": { en: "PDTC", ar: "منصة التصنيف" },
   "app.org": { en: "Abu Dhabi Customs", ar: "جمارك أبوظبي" },
 
-  "nav.ingest": { en: "Ingest", ar: "الاستيراد" },
   "nav.assets": { en: "Data Assets", ar: "الأصول" },
   "nav.attributes": { en: "Data Attributes", ar: "السمات" },
-  "nav.import": { en: "Import", ar: "إعادة الاستيراد" },
   "nav.importTest": { en: "Import Test", ar: "اختبار الاستيراد" },
   "nav.detection": { en: "PII Detection", ar: "كشف البيانات الشخصية" },
   "nav.classification": { en: "Classification", ar: "التصنيف" },
@@ -38,12 +36,6 @@ export const STRINGS: Record<string, { en: string; ar: string }> = {
     en: "Metadata governance workbench · metadata-only, no data values leave the ADC boundary.",
     ar: "منصة حوكمة البيانات الوصفية — بيانات وصفية فقط، لا تغادر القيم حدود الجمارك.",
   },
-
-  "ingest.title": { en: "Ingest IKC Exports", ar: "استيراد مخرجات IKC" },
-  "ingest.drop": { en: "Upload an IKC asset or attribute export (.xlsx)", ar: "ارفع ملف تصدير الأصول أو السمات (.xlsx)" },
-  "ingest.mapping": { en: "Column Mapping", ar: "ربط الأعمدة" },
-  "ingest.runs": { en: "Import Runs", ar: "عمليات الاستيراد" },
-  "ingest.summary": { en: "Import Summary", ar: "ملخص الاستيراد" },
 
   "detection.title": { en: "PII Detection Engine", ar: "محرك كشف البيانات الشخصية" },
   "detection.run": { en: "Run detection", ar: "تشغيل الكشف" },

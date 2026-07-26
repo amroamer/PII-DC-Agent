@@ -13,6 +13,7 @@ const versions = {
   modelId: "test-model",
   engineVersion: "0.1.0",
   schemaVersion: "pii-assess-v1",
+  systemPrompt: "base system prompt",
 };
 
 describe("canonicalisation + hashing (determinism §7.2/§7.3)", () => {
@@ -52,6 +53,13 @@ describe("canonicalisation + hashing (determinism §7.2/§7.3)", () => {
     const payload = canonicalizeAttribute({ assetId: 1, columnName: "x", descriptionEn: "", descriptionAr: "", dataType: "", nativeType: "" }, asset, []);
     const h1 = computeInputHash({ payload, ...versions });
     const h2 = computeInputHash({ payload, ...versions, frameworkVersion: "pii-2.0" });
+    expect(h1).not.toBe(h2);
+  });
+
+  it("hash changes when the composed system prompt (injected criteria) changes", () => {
+    const payload = canonicalizeAttribute({ assetId: 1, columnName: "x", descriptionEn: "", descriptionAr: "", dataType: "", nativeType: "" }, asset, []);
+    const h1 = computeInputHash({ payload, ...versions });
+    const h2 = computeInputHash({ payload, ...versions, systemPrompt: "base + edited criteria block" });
     expect(h1).not.toBe(h2);
   });
 });

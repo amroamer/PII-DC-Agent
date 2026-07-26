@@ -1,16 +1,21 @@
 /**
- * ADC ISMS confidentiality scale + the rollup precedence rule. Defined ONCE and
- * shared by client and server so an asset's rolled-up label is computed the same
- * way in the engine and displayed the same way in the UI.
+ * DGE Whole-of-Government Data Classification Framework v1.0 (PL-IMS-003, §8.2)
+ * confidentiality scale + the rollup precedence rule. Defined ONCE and shared by
+ * client and server so an asset's rolled-up label is computed the same way in the
+ * engine and displayed the same way in the UI.
+ *
+ * The four levels, from least to most restrictive, are Open → Confidential →
+ * Sensitive → Secret. Confidential is the framework's DEFAULT level for all data
+ * (§8.2: "Set confidential as the default classification level for all data").
  *
  * `rank` drives the high-water-mark rollup: an asset inherits the MAX rank among
  * its attributes' levels. Higher rank == more restrictive.
  */
 
 export const CLASSIFICATION_CODES = [
-  "PUBLIC",
-  "INTERNAL",
+  "OPEN",
   "CONFIDENTIAL",
+  "SENSITIVE",
   "SECRET",
 ] as const;
 
@@ -26,24 +31,24 @@ export interface ClassificationLevelDef {
 }
 
 export const CLASSIFICATION_LEVELS: Record<ClassificationCode, ClassificationLevelDef> = {
-  PUBLIC: {
-    code: "PUBLIC",
-    labelEn: "Public",
-    labelAr: "عام",
+  OPEN: {
+    code: "OPEN",
+    labelEn: "Open",
+    labelAr: "مفتوح",
     rank: 0,
     colorToken: "success",
-  },
-  INTERNAL: {
-    code: "INTERNAL",
-    labelEn: "Internal",
-    labelAr: "داخلي",
-    rank: 1,
-    colorToken: "muted",
   },
   CONFIDENTIAL: {
     code: "CONFIDENTIAL",
     labelEn: "Confidential",
     labelAr: "سري",
+    rank: 1,
+    colorToken: "info",
+  },
+  SENSITIVE: {
+    code: "SENSITIVE",
+    labelEn: "Sensitive",
+    labelAr: "حساس",
     rank: 2,
     colorToken: "warning",
   },
@@ -59,6 +64,9 @@ export const CLASSIFICATION_LEVELS: Record<ClassificationCode, ClassificationLev
 export const CLASSIFICATION_LEVELS_LIST: ClassificationLevelDef[] = CLASSIFICATION_CODES.map(
   (code) => CLASSIFICATION_LEVELS[code],
 );
+
+/** The framework's default classification for all data (§8.2). */
+export const DEFAULT_CLASSIFICATION_CODE: ClassificationCode = "CONFIDENTIAL";
 
 export function isClassificationCode(value: unknown): value is ClassificationCode {
   return (

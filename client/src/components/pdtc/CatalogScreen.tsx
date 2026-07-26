@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Bookmark, ChevronDown, Columns3, Download, FileUp, Filter as FilterIcon, Link2, Radar, Save, Search, Tag, Trash2, X } from "lucide-react";
+import { ChevronDown, Columns3, Download, Filter as FilterIcon, Radar, Search, Tag, Trash2, X } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useLanguage } from "@/hooks/useLanguage";
 import { useToast } from "@/hooks/use-toast";
@@ -9,9 +8,7 @@ import { useCatalogState } from "@/hooks/useCatalogState";
 import { useSelection } from "@/hooks/useSelection";
 import {
   FILTERS_BY_SCREEN,
-  FILTER_GROUP_LABELS,
   type CatalogScreen as Screen,
-  type FilterDefinition,
 } from "@shared/lib/filter-defs";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -30,7 +27,12 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Btn } from "./Btn";
 import { EngineWizard } from "./EngineWizard";
 import { ExportDialog } from "./ExportDialog";
+import { AssetImport } from "./AssetImport";
 import { ClassificationBadge } from "./ClassificationBadge";
+import { Modal } from "./Modal";
+import { AssetDetailDrawer } from "./AssetDetailDrawer";
+import { AttributeDetailDrawer } from "./AttributeDetailDrawer";
+import { FilterPanel } from "./FilterPanel";
 import { cn } from "@/lib/utils";
 
 interface ListResponse {
@@ -48,10 +50,14 @@ function toQuery(params: Record<string, string | number | undefined>): string {
 
 export function CatalogScreen({ screen }: { screen: Screen }) {
   const { t, lang } = useLanguage();
-  const { state, effectiveFilters, patchFilter, setFilters, setSearch, setSort, setPage, clearFilters } = useCatalogState(screen);
+  const { state, effectiveFilters, patchFilter, setSearch, setSort, setPage, clearFilters } = useCatalogState(screen);
   const [showFilters, setShowFilters] = useState(false);
   const [wizard, setWizard] = useState<null | "pii" | "classification">(null);
   const [exportOpen, setExportOpen] = useState(false);
+  const [wipeOpen, setWipeOpen] = useState(false);
+  const [wipeConfirm, setWipeConfirm] = useState("");
+  const [detailId, setDetailId] = useState<number | null>(null);
+  const [attrFromAsset, setAttrFromAsset] = useState<number | null>(null);
 
   const filtersJson = JSON.stringify(effectiveFilters);
   const listUrl = `/api/catalog/${screen}?${toQuery({ filters: filtersJson, sort: state.sort, dir: state.dir, page: state.page, pageSize: state.pageSize })}`;
@@ -73,10 +79,7 @@ export function CatalogScreen({ screen }: { screen: Screen }) {
   const columns = useMemo(() => columnsFor(screen), [screen]);
   const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
 
-  // Saved views + per-user column visibility (§2.3).
-  const savedViewsQuery = useQuery<Array<{ id: number; name: string; filters: Record<string, unknown>; shared: boolean }>>({
-    queryKey: [`/api/saved-views?screen=${screen}`],
-  });
+  // Per-user column visibility (§2.3).
   const colPrefsQuery = useQuery<{ columns: string[] | null }>({ queryKey: [`/api/settings/columns?screen=${screen}`] });
   const [hiddenCols, setHiddenCols] = useState<Set<string>>(new Set());
   useEffect(() => {
@@ -85,7 +88,6 @@ export function CatalogScreen({ screen }: { screen: Screen }) {
   }, [colPrefsQuery.data, columns]);
   const visibleColumns = columns.filter((c) => !hiddenCols.has(c.key));
 
-  const [viewName, setViewName] = useState("");
   const saveColPrefs = useMutation({ mutationFn: (cols: string[]) => apiRequest("PUT", `/api/settings/columns?screen=${screen}`, { columns: cols }) });
   const toggleCol = (key: string) =>
     setHiddenCols((prev) => {
@@ -95,21 +97,6 @@ export function CatalogScreen({ screen }: { screen: Screen }) {
       saveColPrefs.mutate(columns.map((c) => c.key).filter((k) => !next.has(k)));
       return next;
     });
-  const saveViewMutation = useMutation({
-    mutationFn: (name: string) => apiRequest("POST", "/api/saved-views", { screen, name, filters: effectiveFilters, columns: visibleColumns.map((c) => c.key), shared: false }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/saved-views?screen=${screen}`] });
-      setViewName("");
-      toast({ title: "View saved" });
-    },
-  });
-  const deleteViewMutation = useMutation({
-    mutationFn: (id: number) => apiRequest("DELETE", `/api/saved-views/${id}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: [`/api/saved-views?screen=${screen}`] }),
-  });
-  const copyLink = () => {
-    navigator.clipboard?.writeText(window.location.href).then(() => toast({ title: "Link copied" }));
-  };
   const bulkActionMutation = useMutation({
     mutationFn: (vars: { action: string; value: string }) => apiRequest<{ changed: number }>("POST", "/api/catalog/bulk-action", { screen, action: vars.action, value: vars.value, selection: sel.selection }),
     onSuccess: (res) => {
@@ -122,6 +109,17 @@ export function CatalogScreen({ screen }: { screen: Screen }) {
     const v = window.prompt(label);
     if (v) bulkActionMutation.mutate({ action, value: v });
   };
+  const wipeMutation = useMutation({
+    mutationFn: () => apiRequest<{ deleted: { assets: number; attributes: number } }>("POST", "/api/catalog/wipe"),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries();
+      sel.clear();
+      setWipeOpen(false);
+      setWipeConfirm("");
+      toast({ title: lang === "ar" ? "تم حذف جميع البيانات" : "All data deleted", description: `${res.deleted.assets} assets · ${res.deleted.attributes} attributes` });
+    },
+    onError: (err: Error) => toast({ variant: "destructive", title: lang === "ar" ? "فشل الحذف" : "Wipe failed", description: err.message }),
+  });
 
   return (
     <div className="space-y-4">
@@ -143,29 +141,6 @@ export function CatalogScreen({ screen }: { screen: Screen }) {
           <FilterIcon className="h-4 w-4" /> {lang === "ar" ? "المرشحات" : "Filters"}
           {activeChips.length > 0 && <Badge variant="secondary" className="ms-1">{activeChips.length}</Badge>}
         </Button>
-        {/* Saved views */}
-        <Popover>
-          <PopoverTrigger asChild>
-            <Button variant="outline"><Bookmark className="h-4 w-4" /> {lang === "ar" ? "العروض" : "Views"}</Button>
-          </PopoverTrigger>
-          <PopoverContent className="w-72">
-            <div className="mb-2 flex gap-1">
-              <Input value={viewName} onChange={(e) => setViewName(e.target.value)} placeholder={lang === "ar" ? "اسم العرض" : "View name"} className="h-8" />
-              <Button size="sm" disabled={!viewName.trim()} onClick={() => saveViewMutation.mutate(viewName.trim())}><Save className="h-4 w-4" /></Button>
-            </div>
-            <div className="max-h-48 space-y-1 overflow-y-auto">
-              {(savedViewsQuery.data ?? []).map((v) => (
-                <div key={v.id} className="flex items-center gap-1">
-                  <button type="button" className="flex-1 truncate rounded px-2 py-1 text-start text-sm hover:bg-accent" onClick={() => setFilters(v.filters)}>
-                    {v.name}{v.shared ? " ·shared" : ""}
-                  </button>
-                  <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => deleteViewMutation.mutate(v.id)}><Trash2 className="h-3.5 w-3.5" /></Button>
-                </div>
-              ))}
-              {(savedViewsQuery.data ?? []).length === 0 && <p className="px-2 py-1 text-xs text-muted-foreground">{lang === "ar" ? "لا عروض محفوظة" : "No saved views"}</p>}
-            </div>
-          </PopoverContent>
-        </Popover>
         {/* Column visibility */}
         <Popover>
           <PopoverTrigger asChild>
@@ -180,17 +155,10 @@ export function CatalogScreen({ screen }: { screen: Screen }) {
             ))}
           </PopoverContent>
         </Popover>
-        <Button variant="ghost" size="icon" onClick={copyLink} title={lang === "ar" ? "نسخ الرابط" : "Copy link to this view"}>
-          <Link2 className="h-4 w-4" />
-        </Button>
         <Button variant="outline" onClick={() => setExportOpen(true)}>
           <Download className="h-4 w-4" /> {lang === "ar" ? "تصدير" : "Export"}
         </Button>
-        <Link href="/import">
-          <Button variant="outline" asChild>
-            <span className="cursor-pointer"><FileUp className="h-4 w-4" /> {lang === "ar" ? "استيراد" : "Import"}</span>
-          </Button>
-        </Link>
+        <AssetImport />
       </div>
 
       {/* Active chips */}
@@ -222,10 +190,38 @@ export function CatalogScreen({ screen }: { screen: Screen }) {
             <Button size="sm" variant="outline" onClick={() => setExportOpen(true)}><Download className="h-4 w-4" /> {lang === "ar" ? "تصدير" : "Export"}</Button>
             <Button size="sm" variant="outline" onClick={() => promptBulkAction("assign-steward", lang === "ar" ? "اسم أمين البيانات" : "Steward name")}>{lang === "ar" ? "إسناد أمين" : "Assign steward"}</Button>
             <Button size="sm" variant="outline" onClick={() => promptBulkAction("add-tag", lang === "ar" ? "الوسم" : "Tag")}>{lang === "ar" ? "إضافة وسم" : "Add tag"}</Button>
+            <Button size="sm" variant="destructive" onClick={() => setWipeOpen(true)}><Trash2 className="h-4 w-4" /> {lang === "ar" ? "حذف الكل" : "Delete all"}</Button>
             <Button size="sm" variant="ghost" onClick={sel.clear}>{lang === "ar" ? "إلغاء" : "Clear"}</Button>
           </CardContent>
         </Card>
       )}
+
+      <Modal
+        open={wipeOpen}
+        onOpenChange={(o) => { if (!o) { setWipeOpen(false); setWipeConfirm(""); } }}
+        title={lang === "ar" ? "حذف كل البيانات" : "Delete all data"}
+        description={lang === "ar"
+          ? "سيؤدي هذا إلى حذف جميع الأصول والسمات ونتائج الكشف والتصنيف نهائياً — بغض النظر عن التحديد الحالي. لا يمكن التراجع عن ذلك."
+          : "This permanently deletes ALL assets, attributes, PII detections and classifications — regardless of your current selection. This cannot be undone."}
+        footer={
+          <>
+            <Button variant="outline" onClick={() => { setWipeOpen(false); setWipeConfirm(""); }}>{lang === "ar" ? "إلغاء" : "Cancel"}</Button>
+            <Btn variant="destructive" loading={wipeMutation.isPending} disabled={wipeConfirm !== "DELETE"} onClick={() => wipeMutation.mutate()}>
+              {lang === "ar" ? "حذف كل شيء" : "Delete everything"}
+            </Btn>
+          </>
+        }
+      >
+        <div className="space-y-2">
+          <p className="text-sm">{lang === "ar" ? "اكتب DELETE للتأكيد." : "Type DELETE to confirm."}</p>
+          <Input value={wipeConfirm} onChange={(e) => setWipeConfirm(e.target.value)} placeholder="DELETE" />
+          <p className="text-xs text-muted-foreground">
+            {lang === "ar"
+              ? "يبقى: المستخدمون، الأطر، فئات البيانات، الإعدادات، العروض المحفوظة، وسجل التدقيق."
+              : "Kept: users, frameworks, data classes, settings, saved views, and the audit log."}
+          </p>
+        </div>
+      </Modal>
 
       {/* Select-all-matching banner */}
       {allPageSelected && sel.selection.mode === "include" && total > pageIds.length && (
@@ -266,8 +262,8 @@ export function CatalogScreen({ screen }: { screen: Screen }) {
           </TableHeader>
           <TableBody>
             {rows.map((row) => (
-              <TableRow key={row.id} data-state={sel.isSelected(row.id) ? "selected" : undefined}>
-                <TableCell>
+              <TableRow key={row.id} className="cursor-pointer" onClick={() => setDetailId(row.id)} data-state={sel.isSelected(row.id) ? "selected" : undefined}>
+                <TableCell onClick={(e) => e.stopPropagation()}>
                   <Checkbox checked={sel.isSelected(row.id)} onCheckedChange={() => sel.toggle(row.id)} aria-label={`select ${row.id}`} />
                 </TableCell>
                 {visibleColumns.map((c) => (
@@ -316,15 +312,25 @@ export function CatalogScreen({ screen }: { screen: Screen }) {
         filters={effectiveFilters}
         selection={sel.hasSelection ? sel.selection : undefined}
       />
+
+      {/* Row-click detail drawers */}
+      {screen === "assets" ? (
+        <>
+          <AssetDetailDrawer id={detailId} onClose={() => setDetailId(null)} onOpenAttribute={setAttrFromAsset} />
+          <AttributeDetailDrawer id={attrFromAsset} onClose={() => setAttrFromAsset(null)} />
+        </>
+      ) : (
+        <AttributeDetailDrawer id={detailId} onClose={() => setDetailId(null)} />
+      )}
     </div>
   );
 }
 
 // --- KPI strip ------------------------------------------------------------
 const LEVEL_BAR_COLOR: Record<string, string> = {
-  PUBLIC: "bg-success",
-  INTERNAL: "bg-muted-foreground/40",
-  CONFIDENTIAL: "bg-warning",
+  OPEN: "bg-success",
+  CONFIDENTIAL: "bg-blue-500",
+  SENSITIVE: "bg-warning",
   SECRET: "bg-destructive",
   UNCLASSIFIED: "bg-border",
 };
@@ -344,7 +350,17 @@ function KpiStrip({
   onApply: (key: string, value: unknown) => void;
 }) {
   const { lang } = useLanguage();
-  if (!kpis) return null;
+  if (!kpis) {
+    // Loading skeleton — keeps the strip visible instead of vanishing while the
+    // aggregates load, which on large catalogs used to make the KPIs look gone.
+    return (
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
+        {Array.from({ length: 7 }).map((_, i) => (
+          <div key={i} className="h-16 animate-pulse rounded-lg border bg-muted/40" />
+        ))}
+      </div>
+    );
+  }
   const n = (k: string) => Number(kpis[k] ?? 0);
   const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) : 0);
 
@@ -352,11 +368,11 @@ function KpiStrip({
     screen === "attributes"
       ? [
           { label: lang === "ar" ? "في العرض" : "In view", value: `${n("inView")}`, sub: `${lang === "ar" ? "من" : "of"} ${n("total")}` },
-          { label: "PII", value: `${n("pii")}`, sub: `${pct(n("pii"), n("analysed"))}%`, apply: () => onApply("verdict", "pii") },
+          { label: "PII", value: `${n("pii")}`, sub: `${pct(n("pii"), n("analysed"))}%`, apply: () => onApply("verdict", ["pii"]) },
           { label: lang === "ar" ? "فئة خاصة" : "Special", value: `${n("specialCategory")}`, apply: () => onApply("specialCategory", true) },
           { label: lang === "ar" ? "محلّلة" : "Analysed", value: `${n("analysed")}`, sub: `${n("total") - n("analysed")} ${lang === "ar" ? "لم تُحلّل" : "never"}` },
           { label: lang === "ar" ? "معلّقة" : "Pending", value: `${n("pendingReview")}`, apply: () => onApply("reviewStatus", "pending") },
-          { label: lang === "ar" ? "غير مؤكد" : "Uncertain", value: `${n("uncertain")}`, apply: () => onApply("verdict", "uncertain") },
+          { label: lang === "ar" ? "غير مؤكد" : "Uncertain", value: `${n("uncertain")}`, apply: () => onApply("verdict", ["uncertain"]) },
           { label: lang === "ar" ? "متوسط الثقة" : "Avg conf.", value: `${Math.round(n("avgConfidence") * 100)}%`, sub: `${n("belowThreshold")} ${lang === "ar" ? "دون العتبة" : "below"}` },
         ]
       : [
@@ -421,177 +437,6 @@ function KpiStrip({
 }
 
 // --- Filter panel ---------------------------------------------------------
-function FilterPanel({
-  screen,
-  defs,
-  filters,
-  onChange,
-}: {
-  screen: Screen;
-  defs: FilterDefinition[];
-  filters: Record<string, unknown>;
-  onChange: (key: string, value: unknown) => void;
-}) {
-  const { lang } = useLanguage();
-  const groups = [...new Set(defs.map((d) => d.group))];
-  return (
-    <Card>
-      <CardContent className="grid gap-4 py-4 md:grid-cols-2 lg:grid-cols-3">
-        {groups.map((group) => (
-          <div key={group} className="space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              {lang === "ar" ? FILTER_GROUP_LABELS[group].ar : FILTER_GROUP_LABELS[group].en}
-            </p>
-            {defs.filter((d) => d.group === group && d.key !== "search").map((d) => (
-              <FilterField key={d.key} screen={screen} def={d} value={filters[d.key]} onChange={(v) => onChange(d.key, v)} />
-            ))}
-          </div>
-        ))}
-      </CardContent>
-    </Card>
-  );
-}
-
-function FilterField({
-  screen,
-  def,
-  value,
-  onChange,
-}: {
-  screen: Screen;
-  def: FilterDefinition;
-  value: unknown;
-  onChange: (v: unknown) => void;
-}) {
-  const { lang } = useLanguage();
-  const label = lang === "ar" ? def.labelAr : def.labelEn;
-
-  if (def.control === "text") {
-    return <Input value={(value as string) ?? ""} onChange={(e) => onChange(e.target.value || undefined)} placeholder={label} className="h-9" />;
-  }
-  if (def.control === "tristate" || def.control === "boolean" || def.control === "exists") {
-    const v = value === true ? "yes" : value === false ? "no" : "any";
-    return (
-      <div className="flex items-center gap-2">
-        <span className="flex-1 text-sm">{label}</span>
-        <select
-          className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-          value={v}
-          onChange={(e) => onChange(e.target.value === "any" ? undefined : e.target.value === "yes")}
-        >
-          <option value="any">{lang === "ar" ? "الكل" : "Any"}</option>
-          <option value="yes">{lang === "ar" ? "نعم" : "Yes"}</option>
-          <option value="no">{lang === "ar" ? "لا" : "No"}</option>
-        </select>
-      </div>
-    );
-  }
-  if (def.control === "enum") {
-    return (
-      <div className="flex items-center gap-2">
-        <span className="flex-1 text-sm">{label}</span>
-        <select
-          className="h-9 max-w-[10rem] rounded-md border border-input bg-background px-2 text-sm"
-          value={(value as string) ?? ""}
-          onChange={(e) => onChange(e.target.value || undefined)}
-        >
-          <option value="">{lang === "ar" ? "الكل" : "Any"}</option>
-          {def.staticOptions?.map((o) => (
-            <option key={o.value} value={o.value}>{lang === "ar" ? o.labelAr : o.labelEn}</option>
-          ))}
-        </select>
-      </div>
-    );
-  }
-  if (def.control === "numeric-range") {
-    const v = (value as { min?: number; max?: number }) ?? {};
-    const set = (patch: { min?: number; max?: number }) => {
-      const next = { ...v, ...patch };
-      const cleaned = Object.fromEntries(Object.entries(next).filter(([, x]) => typeof x === "number" && !Number.isNaN(x)));
-      onChange(Object.keys(cleaned).length ? cleaned : undefined);
-    };
-    return (
-      <div className="space-y-1">
-        <span className="text-sm">{label}</span>
-        <div className="flex items-center gap-1">
-          <Input type="number" className="h-9" placeholder={lang === "ar" ? "من" : "min"} value={v.min ?? ""} onChange={(e) => set({ min: e.target.value === "" ? undefined : Number(e.target.value) })} />
-          <span className="text-muted-foreground">–</span>
-          <Input type="number" className="h-9" placeholder={lang === "ar" ? "إلى" : "max"} value={v.max ?? ""} onChange={(e) => set({ max: e.target.value === "" ? undefined : Number(e.target.value) })} />
-        </div>
-      </div>
-    );
-  }
-  if (def.control === "date-range") {
-    const v = (value as { from?: string; to?: string }) ?? {};
-    const set = (patch: { from?: string; to?: string }) => {
-      const next = { ...v, ...patch };
-      const cleaned = Object.fromEntries(Object.entries(next).filter(([, x]) => x));
-      onChange(Object.keys(cleaned).length ? cleaned : undefined);
-    };
-    return (
-      <div className="space-y-1">
-        <span className="text-sm">{label}</span>
-        <div className="flex items-center gap-1">
-          <Input type="date" className="h-9" value={v.from ?? ""} onChange={(e) => set({ from: e.target.value || undefined })} />
-          <span className="text-muted-foreground">–</span>
-          <Input type="date" className="h-9" value={v.to ?? ""} onChange={(e) => set({ to: e.target.value || undefined })} />
-        </div>
-      </div>
-    );
-  }
-  // multiselect
-  return <MultiSelectFilter screen={screen} def={def} value={(value as string[]) ?? []} onChange={onChange} label={label} />;
-}
-
-function MultiSelectFilter({
-  screen,
-  def,
-  value,
-  onChange,
-  label,
-}: {
-  screen: Screen;
-  def: FilterDefinition;
-  value: string[];
-  onChange: (v: unknown) => void;
-  label: string;
-}) {
-  const { lang } = useLanguage();
-  const [open, setOpen] = useState(false);
-  const distinctQuery = useQuery<Array<{ value: string; count: number }>>({
-    queryKey: [`/api/catalog/filter-options?screen=${screen}&key=${def.key}`],
-    enabled: open && def.optionsSource === "distinct",
-  });
-  const options = def.optionsSource === "static"
-    ? (def.staticOptions ?? []).map((o) => ({ value: o.value, label: lang === "ar" ? o.labelAr : o.labelEn }))
-    : (distinctQuery.data ?? []).map((o) => ({ value: o.value, label: `${o.value} (${o.count})` }));
-
-  const toggle = (v: string) => {
-    const next = value.includes(v) ? value.filter((x) => x !== v) : [...value, v];
-    onChange(next.length ? next : undefined);
-  };
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" className="w-full justify-between font-normal">
-          <span className="truncate">{label}{value.length ? ` (${value.length})` : ""}</span>
-          <ChevronDown className="h-3 w-3 opacity-50" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="max-h-60 w-64 overflow-y-auto">
-        {options.length === 0 && <p className="py-2 text-center text-sm text-muted-foreground">{lang === "ar" ? "لا خيارات" : "No options"}</p>}
-        {options.map((o) => (
-          <button key={o.value} type="button" onClick={() => toggle(o.value)} className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-start text-sm hover:bg-accent">
-            <Checkbox checked={value.includes(o.value)} />
-            <span className="truncate">{o.label}</span>
-          </button>
-        ))}
-      </PopoverContent>
-    </Popover>
-  );
-}
-
 function formatFilterValue(v: unknown): string {
   if (Array.isArray(v)) return v.join(", ");
   if (v === true) return "Yes";
@@ -620,7 +465,7 @@ function columnsFor(screen: Screen): CatalogColumn[] {
       { key: "name", header: "Name", headerAr: "الاسم", sortable: true, render: (r) => <span className="font-medium">{String(r.name)}</span> },
       { key: "ikcAssetId", header: "Asset Id", headerAr: "معرّف الأصل", sortable: true },
       { key: "assetType", header: "Type", headerAr: "النوع", sortable: true },
-      { key: "businessDomain", header: "Domain", headerAr: "المجال", sortable: true },
+      { key: "businessDomain", header: "Domain", headerAr: "المجال", render: (r) => (r.businessDomain as string[] | null)?.join(", ") || "—" },
       { key: "assetClassification", header: "Classification", headerAr: "التصنيف", sortable: true, render: (r) => <ClassificationBadge code={r.assetClassification as any} /> },
       { key: "piiFlag", header: "PII", headerAr: "شخصية", render: (r) => (r.piiFlag ? <Badge variant="destructive">PII</Badge> : "—") },
     ];

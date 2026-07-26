@@ -1,9 +1,11 @@
 import type { Express } from "express";
-import { asyncHandler, HttpError, requireAuth } from "../http";
+import { asyncHandler, HttpError, requireAdmin, requireAuth } from "../http";
 import { savedViewSchema, selectionSchema, type User } from "@shared/models/schema";
 import type { CatalogScreen, FilterState } from "@shared/lib/filter-defs";
 import { listAssets, listAttributes, distinctOptions, resolveSelection } from "./query";
 import { getAssetKpis, getAttributeKpis } from "./kpis";
+import { wipeAllData } from "./wipe";
+import { getAssetDetail, getAttributeDetail } from "./detail";
 import {
   bulkCatalogAction,
   createSavedView,
@@ -32,6 +34,37 @@ function screenOf(raw: unknown): CatalogScreen {
 }
 
 export function registerCatalogRoutes(app: Express): void {
+  // Hard reset — wipes ALL catalog + engine data (keeps users, config, frameworks,
+  // data classes, saved views, and the audit log). Admin only. Irreversible.
+  app.post(
+    "/api/catalog/wipe",
+    requireAdmin,
+    asyncHandler(async (req, res) => {
+      const deleted = await wipeAllData(userId(req));
+      res.json({ ok: true, deleted });
+    }),
+  );
+
+  // Rich single-row detail for the catalog detail drawers.
+  app.get(
+    "/api/catalog/attributes/:id",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const detail = await getAttributeDetail(Number(req.params.id));
+      if (!detail) throw new HttpError(404, "Attribute not found.");
+      res.json(detail);
+    }),
+  );
+  app.get(
+    "/api/catalog/assets/:id",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const detail = await getAssetDetail(Number(req.params.id));
+      if (!detail) throw new HttpError(404, "Asset not found.");
+      res.json(detail);
+    }),
+  );
+
   app.get(
     "/api/catalog/assets",
     requireAuth,

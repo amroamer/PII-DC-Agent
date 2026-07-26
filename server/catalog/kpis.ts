@@ -37,33 +37,31 @@ export async function getAttributeKpis(filters: FilterState) {
   }
 
   const threshold = getSetting<number>("confidence_review_threshold") ?? 0.6;
-  const inIds = inArray(detections.attributeId, ids);
+  // When nothing is filtered (ids == every attribute) skip id-scoping entirely —
+  // that avoids a 20k-element IN list on the common dashboard case. Otherwise scope
+  // with inArray. Counts run as parallel GROUP BY passes, not ~12 sequential queries.
+  const scopeAll = ids.length >= total;
+  const detScope = scopeAll ? sql`true` : inArray(detections.attributeId, ids);
+  const clsScope = scopeAll ? sql`true` : inArray(classifications.targetId, ids);
+  const rvScope = scopeAll ? sql`true` : inArray(reviewItems.targetId, ids);
 
-  const [pii, special, analysed, uncertain] = await Promise.all([
-    scalar(db.select({ n: sql<number>`count(distinct ${detections.attributeId})::int` }).from(detections).where(and(inIds, eq(detections.verdict, "pii")))),
-    scalar(db.select({ n: sql<number>`count(distinct ${detections.attributeId})::int` }).from(detections).where(and(inIds, eq(detections.criterionCode, "SPECIAL_CATEGORY")))),
-    scalar(db.select({ n: sql<number>`count(distinct ${detections.attributeId})::int` }).from(detections).where(inIds)),
-    scalar(db.select({ n: sql<number>`count(distinct ${detections.attributeId})::int` }).from(detections).where(and(inIds, eq(detections.verdict, "uncertain")))),
+  const [verdictRows, criterionRows, levelRows, confRows, analysed, pendingReview] = await Promise.all([
+    db.select({ verdict: detections.verdict, n: sql<number>`count(distinct ${detections.attributeId})::int` }).from(detections).where(detScope).groupBy(detections.verdict),
+    db.select({ criterion: detections.criterionCode, n: sql<number>`count(distinct ${detections.attributeId})::int` }).from(detections).where(detScope).groupBy(detections.criterionCode),
+    db.select({ level: classifications.levelCode, n: sql<number>`count(distinct ${classifications.targetId})::int` }).from(classifications).where(and(eq(classifications.scope, "attribute"), isNull(classifications.supersededBy), clsScope)).groupBy(classifications.levelCode),
+    db.select({ avg: sql<number>`coalesce(avg(${detections.confidence}), 0)::float`, below: sql<number>`count(*) filter (where ${detections.confidence} < ${threshold})::int` }).from(detections).where(and(detScope, eq(detections.verdict, "pii"))),
+    scalar(db.select({ n: sql<number>`count(distinct ${detections.attributeId})::int` }).from(detections).where(detScope)),
+    scalar(db.select({ n: sql<number>`count(*)::int` }).from(reviewItems).where(and(eq(reviewItems.targetType, "attribute"), eq(reviewItems.status, "pending"), rvScope))),
   ]);
 
-  const pendingReview = await scalar(
-    db.select({ n: sql<number>`count(*)::int` }).from(reviewItems).where(and(inArray(reviewItems.targetId, ids), eq(reviewItems.targetType, "attribute"), eq(reviewItems.status, "pending"))),
-  );
+  const byVerdict: Record<string, number> = {};
+  for (const r of verdictRows) byVerdict[r.verdict] = r.n;
 
   const criteriaDistribution: Record<string, number> = {};
-  for (const code of CRITERION_CODES) {
-    criteriaDistribution[code] = await scalar(
-      db.select({ n: sql<number>`count(distinct ${detections.attributeId})::int` }).from(detections).where(and(inIds, eq(detections.criterionCode, code))),
-    );
-  }
+  for (const code of CRITERION_CODES) criteriaDistribution[code] = 0;
+  for (const r of criterionRows) if (r.criterion) criteriaDistribution[r.criterion] = r.n;
 
-  // Count DISTINCT classified attributes per level so UNCLASSIFIED can't be skewed
-  // by any stray duplicate active rows.
-  const levelRows = await db
-    .select({ level: classifications.levelCode, n: sql<number>`count(distinct ${classifications.targetId})::int` })
-    .from(classifications)
-    .where(and(eq(classifications.scope, "attribute"), isNull(classifications.supersededBy), inArray(classifications.targetId, ids)))
-    .groupBy(classifications.levelCode);
+  // DISTINCT classified attributes per level so UNCLASSIFIED isn't skewed by dupes.
   const classificationDistribution: Record<string, number> = {};
   for (const code of CLASSIFICATION_CODES) classificationDistribution[code] = 0;
   let classified = 0;
@@ -73,19 +71,14 @@ export async function getAttributeKpis(filters: FilterState) {
   }
   classificationDistribution.UNCLASSIFIED = Math.max(0, ids.length - classified);
 
-  const confRows = await db
-    .select({ avg: sql<number>`coalesce(avg(${detections.confidence}), 0)::float`, below: sql<number>`count(*) filter (where ${detections.confidence} < ${threshold})::int` })
-    .from(detections)
-    .where(and(inIds, eq(detections.verdict, "pii")));
-
   return {
     inView: ids.length,
     total,
-    pii,
-    specialCategory: special,
+    pii: byVerdict.pii ?? 0,
+    specialCategory: criteriaDistribution.SPECIAL_CATEGORY ?? 0,
     analysed,
     pendingReview,
-    uncertain,
+    uncertain: byVerdict.uncertain ?? 0,
     avgConfidence: Number((confRows[0]?.avg ?? 0).toFixed(3)),
     belowThreshold: confRows[0]?.below ?? 0,
     criteriaDistribution,
@@ -128,10 +121,19 @@ export async function getAssetKpis(filters: FilterState) {
   }
 
   // Assets containing at least one layer conflict among their attributes.
-  const conflictRows = await db.execute(
-    sql`SELECT count(distinct a.asset_id)::int AS n FROM attributes a WHERE a.asset_id = ANY(${ids}) AND EXISTS (SELECT 1 FROM detections d WHERE d.attribute_id = a.id AND d.verdict='pii') AND EXISTS (SELECT 1 FROM detections d2 WHERE d2.attribute_id = a.id AND d2.verdict='not_pii')`,
+  const assetScope = ids.length >= total ? sql`true` : inArray(attributes.assetId, ids);
+  const conflicts = await scalar(
+    db
+      .select({ n: sql<number>`count(distinct ${attributes.assetId})::int` })
+      .from(attributes)
+      .where(
+        and(
+          assetScope,
+          sql`EXISTS (SELECT 1 FROM detections d WHERE d.attribute_id = ${attributes.id} AND d.verdict = 'pii')`,
+          sql`EXISTS (SELECT 1 FROM detections d2 WHERE d2.attribute_id = ${attributes.id} AND d2.verdict = 'not_pii')`,
+        ),
+      ),
   );
-  const conflicts = Number((conflictRows.rows[0] as { n?: number } | undefined)?.n ?? 0);
 
   return {
     inView: ids.length,

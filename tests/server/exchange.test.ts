@@ -5,7 +5,7 @@ import { generateWorkbook, type ExportRow } from "../../server/exchange/export";
 
 const current: CurrentCatalogRow = {
   piiName: "PII",
-  columnDataClassification: "INTERNAL",
+  columnDataClassification: "CONFIDENTIAL",
   columnName: "email",
   dataType: "VARCHAR",
   selectedDataClassName: "EMAIL",
@@ -15,7 +15,7 @@ describe("round-trip diff (§13.8)", () => {
   it("reports exactly the mutated editable field and nothing else", () => {
     const sheet = {
       "PII Decision": "Yes", // == current (piiName present) -> no diff
-      "Classification Decision": "SECRET", // INTERNAL -> SECRET -> one diff
+      "Classification Decision": "SECRET", // CONFIDENTIAL -> SECRET -> one diff
       "Column Name": "email", // read-only, unchanged
       "Data Type": "VARCHAR", // read-only, unchanged
     };
@@ -31,7 +31,7 @@ describe("field-cleared detection (P0 fix)", () => {
   it("flags a blanked editable cell that previously carried a tag as 'cleared'", () => {
     const sheet = { "PII Decision": "", "Classification Decision": "" };
     const { diffs } = computeRowDiffs(sheet, current);
-    // piiName present -> clearing it is a diff; classification INTERNAL -> clearing is a diff.
+    // piiName present -> clearing it is a diff; classification CONFIDENTIAL -> clearing is a diff.
     expect(diffs.map((d) => d.changeType).sort()).toEqual(["cleared", "cleared"]);
   });
 
@@ -45,7 +45,7 @@ describe("field-cleared detection (P0 fix)", () => {
 describe("read-only enforcement (§13.9)", () => {
   it("counts a read-only column change as a warning and produces no diff for it", () => {
     const sheet = {
-      "Classification Decision": "INTERNAL", // == current -> no diff
+      "Classification Decision": "CONFIDENTIAL", // == current -> no diff
       "Data Type": "CHANGED", // read-only mutated -> warning, ignored
     };
     const { diffs, readOnlyWarnings } = computeRowDiffs(sheet, current);

@@ -1,38 +1,62 @@
 import * as XLSX from "xlsx";
 import type { ClassificationCode } from "@shared/lib/classification";
 import { isClassificationCode } from "@shared/lib/classification";
-import type { IkcSheetType } from "@shared/lib/ikc-fields";
 
 export interface ParsedSheet {
   headers: string[];
   rows: Record<string, unknown>[];
 }
 
-/** Read the first worksheet of an uploaded IKC export into header + row objects. */
-export function parseWorkbook(buffer: Buffer): ParsedSheet {
-  const workbook = XLSX.read(buffer, { type: "buffer" });
-  const sheetName = workbook.SheetNames[0];
-  if (!sheetName) return { headers: [], rows: [] };
+export interface WorkbookSheets {
+  /** The "Asset" sheet (one row per data asset), or null if not present. */
+  assetSheet: ParsedSheet | null;
+  /** The "Columns"/attribute sheet (one row per column), or null if not present. */
+  columnSheet: ParsedSheet | null;
+  /** Every worksheet name found, for diagnostics. */
+  sheetNames: string[];
+}
 
-  const worksheet = workbook.Sheets[sheetName];
+const ASSET_SHEET_NAMES = new Set(["asset", "assets"]);
+const COLUMN_SHEET_NAMES = new Set(["columns", "column", "attributes", "attribute"]);
+
+function parseNamedSheet(workbook: XLSX.WorkBook, name: string): ParsedSheet {
+  const worksheet = workbook.Sheets[name];
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, {
     defval: null,
     raw: false,
   });
-
   const headerMatrix = XLSX.utils.sheet_to_json<unknown[]>(worksheet, { header: 1 });
   const headers = (headerMatrix[0] as unknown[] | undefined)?.map((h) => String(h ?? "").trim()) ?? [];
-
   return { headers: headers.filter(Boolean), rows };
 }
 
-/** Best-effort guess of which IKC sheet was uploaded, from the header set. */
-export function guessSheetType(headers: string[]): IkcSheetType {
-  const norm = headers.map((h) => h.toLowerCase());
-  const looksLikeAttribute = norm.some(
-    (h) => h.includes("column") || h.includes("attribute") || h.includes("field"),
-  );
-  return looksLikeAttribute ? "attribute" : "asset";
+/**
+ * Read a single IKC export workbook that carries BOTH sheets — the "Asset" sheet
+ * and the "Columns" (attribute) sheet — in one file. Sheets are matched by name
+ * (case-insensitive); when the names are unrecognised we fall back to position
+ * (first = asset, second = columns) so slightly-renamed exports still load.
+ */
+export function parseTwoSheetWorkbook(buffer: Buffer): WorkbookSheets {
+  const workbook = XLSX.read(buffer, { type: "buffer" });
+  const sheetNames = workbook.SheetNames;
+
+  let assetName = sheetNames.find((n) => ASSET_SHEET_NAMES.has(n.trim().toLowerCase()));
+  let columnName = sheetNames.find((n) => COLUMN_SHEET_NAMES.has(n.trim().toLowerCase()));
+
+  // Positional fallback when the sheets aren't named as we expect.
+  if (!assetName && !columnName && sheetNames.length >= 2) {
+    [assetName, columnName] = sheetNames;
+  } else if (!assetName && sheetNames.length >= 1) {
+    assetName = sheetNames.find((n) => n !== columnName);
+  } else if (!columnName && sheetNames.length >= 2) {
+    columnName = sheetNames.find((n) => n !== assetName);
+  }
+
+  return {
+    assetSheet: assetName ? parseNamedSheet(workbook, assetName) : null,
+    columnSheet: columnName ? parseNamedSheet(workbook, columnName) : null,
+    sheetNames,
+  };
 }
 
 // --- value coercion helpers -------------------------------------------------
@@ -83,18 +107,92 @@ export function asStringArray(value: unknown): string[] | null {
     .filter(Boolean);
 }
 
+/**
+ * Trim, drop empties, de-dupe (order-preserving). Collapses both real whitespace and the
+ * LITERAL `\t` / `\n` / `\r` escape sequences IKC embeds via Python `repr()` (e.g.
+ * `'Finance\tFinancial - Revenue'`, `'Party\n'`) — those arrive as two characters, not control chars.
+ */
+function cleanParts(parts: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const p of parts) {
+    const v = p.replace(/\\[tnr]/g, " ").replace(/\s+/g, " ").trim();
+    if (v && !seen.has(v)) {
+      seen.add(v);
+      out.push(v);
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse a possibly list-shaped cell into a clean string[]. Handles the shapes IKC
+ * exports: JSON arrays `["a","b"]`, Python list literals `['a', 'b']`, and plain
+ * delimited strings `"a; b"`. Empty (incl. `[]`) → null.
+ */
+export function asList(value: unknown): string[] | null {
+  const s = asString(value);
+  if (s === null) return null;
+
+  let parts: string[];
+  if (/^\[.*\]$/s.test(s)) {
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(s);
+    } catch {
+      /* Python single-quoted literal — handled below. */
+    }
+    if (Array.isArray(parsed)) {
+      // Objects (e.g. a stray JSON-object array) collapse to "" and get dropped.
+      parts = parsed.map((x) => (x !== null && typeof x === "object" ? "" : String(x ?? "")));
+    } else {
+      // Pull the quoted segments out of a Python list literal (single or double quotes).
+      parts = [...s.matchAll(/'([^']*)'|"([^"]*)"/g)].map((m) => m[1] ?? m[2] ?? "");
+    }
+  } else {
+    parts = s.split(/[;,|]/);
+  }
+
+  const cleaned = cleanParts(parts);
+  return cleaned.length ? cleaned : null;
+}
+
+/**
+ * Parse the IKC "Suggested Data Classes" JSON — an array of `{name, confidence, …}`
+ * objects — into a clean list of class names. Falls back to asList for non-JSON input.
+ */
+export function asClassNames(value: unknown): string[] | null {
+  const s = asString(value);
+  if (s === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(s);
+  } catch {
+    return asList(s);
+  }
+  if (!Array.isArray(parsed)) return asList(s);
+  const names = parsed.map((item) =>
+    item !== null && typeof item === "object"
+      ? String((item as Record<string, unknown>).name ?? "")
+      : String(item ?? ""),
+  );
+  const cleaned = cleanParts(names);
+  return cleaned.length ? cleaned : null;
+}
+
 export function asClassification(value: unknown): ClassificationCode | null {
   const s = asString(value);
   if (s === null) return null;
   const upper = s.toUpperCase().replace(/\s+/g, "_");
   if (isClassificationCode(upper)) return upper;
-  // tolerate label spellings
+  // tolerate label spellings, incl. legacy scales (Public/Internal/Restricted/Top Secret)
   const map: Record<string, ClassificationCode> = {
-    OPEN: "PUBLIC",
-    PUBLIC: "PUBLIC",
-    INTERNAL: "INTERNAL",
+    OPEN: "OPEN",
+    PUBLIC: "OPEN",
+    INTERNAL: "CONFIDENTIAL",
     RESTRICTED: "CONFIDENTIAL",
     CONFIDENTIAL: "CONFIDENTIAL",
+    SENSITIVE: "SENSITIVE",
     SECRET: "SECRET",
     TOP_SECRET: "SECRET",
   };

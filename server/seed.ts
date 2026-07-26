@@ -19,10 +19,9 @@ import {
 import { POLICY_CRITERIA_LIST } from "@shared/lib/criteria";
 import { CLASSIFICATION_LEVELS_LIST } from "@shared/lib/classification";
 import { SEED_PROMPTS, SEED_DATA_CLASSES, SEED_APP_SETTINGS } from "./seed-data";
-import { DEFAULT_CLASSIFICATION_RULES } from "./classification-engine/attribute-rules";
 import { hashPassword } from "./auth";
 import { setPrompt, setSetting, setDataClasses } from "./reference-cache";
-import { ensureFramework } from "./frameworks/store";
+import { reconcileFramework } from "./frameworks/store";
 import { log } from "./vite";
 
 export const DEFAULT_ADMIN = {
@@ -36,13 +35,12 @@ export async function seedReferenceData(): Promise<void> {
   for (const prompt of SEED_PROMPTS) setPrompt(prompt);
   setDataClasses(SEED_DATA_CLASSES);
   for (const setting of SEED_APP_SETTINGS) setSetting(setting.key, setting.value);
-  setSetting("classification_rules", DEFAULT_CLASSIFICATION_RULES);
 
   // 2) Persist + hydrate (best effort).
   try {
     await persist();
-    await ensureFramework("pii");
-    await ensureFramework("classification");
+    await reconcileFramework("pii");
+    await reconcileFramework("classification");
     await hydrate();
     log("reference data seeded");
   } catch (err) {
@@ -59,10 +57,7 @@ async function persist(): Promise<void> {
 
   await db
     .insert(appSettings)
-    .values([
-      ...SEED_APP_SETTINGS.map((s) => ({ key: s.key, value: s.value })),
-      { key: "classification_rules", value: DEFAULT_CLASSIFICATION_RULES },
-    ])
+    .values(SEED_APP_SETTINGS.map((s) => ({ key: s.key, value: s.value })))
     .onConflictDoNothing();
 
   await db

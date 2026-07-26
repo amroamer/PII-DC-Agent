@@ -8,13 +8,22 @@ import { db } from "../db";
 import {
   frameworks,
   frameworkVersions,
+  type DetectionVerdict,
   type Framework,
   type FrameworkType,
   type FrameworkVersion,
 } from "@shared/models/schema";
-import { POLICY_CRITERIA_LIST } from "@shared/lib/criteria";
-import { CLASSIFICATION_LEVELS_LIST } from "@shared/lib/classification";
-import { DEFAULT_CLASSIFICATION_RULES } from "../classification-engine/attribute-rules";
+import {
+  POLICY_CRITERIA_LIST,
+  isCriterionCode,
+  type CriterionCode,
+  type CriterionDef,
+} from "@shared/lib/criteria";
+import { CLASSIFICATION_LEVELS_LIST, isClassificationCode } from "@shared/lib/classification";
+import {
+  DEFAULT_CLASSIFICATION_RULES,
+  type ClassificationRule,
+} from "../classification-engine/attribute-rules";
 
 export interface ActiveFramework {
   id: number | null;
@@ -28,15 +37,6 @@ export function defaultDefinition(type: FrameworkType): Record<string, unknown> 
       version: "1.0",
       effective: "2025-09-25",
       criteria: POLICY_CRITERIA_LIST,
-      principles: [
-        "Lawfulness, fairness, transparency",
-        "Purpose limitation",
-        "Data minimisation",
-        "Accuracy",
-        "Storage limitation",
-        "Integrity and confidentiality",
-        "Accountability",
-      ],
     };
   }
   return {
@@ -127,4 +127,103 @@ export async function restoreVersion(type: FrameworkType, versionId: number): Pr
   if (!ver || ver.frameworkId !== fw.id) return null;
   // Restore = create a NEW version from the old definition (prior versions stay immutable).
   return createVersion(type, ver.definition, `Restored from version ${ver.version}.`, ver.authorId ?? null);
+}
+
+// ---------------------------------------------------------------------------
+// Authoritative accessors — the engines read criteria / rules from the ACTIVE
+// framework version so steward edits actually change engine behaviour. Each
+// coerces the stored jsonb and falls back to the code default if it is missing
+// or malformed, so a bad edit can never crash a run.
+// ---------------------------------------------------------------------------
+
+const DETECTION_VERDICTS: readonly DetectionVerdict[] = ["pii", "not_pii", "uncertain"];
+function isDetectionVerdict(v: unknown): v is DetectionVerdict {
+  return typeof v === "string" && (DETECTION_VERDICTS as readonly string[]).includes(v);
+}
+
+function coerceRule(raw: unknown): ClassificationRule | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.id !== "string" || !isClassificationCode(r.level)) return null;
+  if (r.criterion !== undefined && !isCriterionCode(r.criterion)) return null;
+  if (r.verdict !== undefined && !isDetectionVerdict(r.verdict)) return null;
+  if (r.isSpecialCategory !== undefined && typeof r.isSpecialCategory !== "boolean") return null;
+  return {
+    id: r.id,
+    level: r.level,
+    note: typeof r.note === "string" ? r.note : "",
+    ...(r.criterion !== undefined ? { criterion: r.criterion as CriterionCode } : {}),
+    ...(r.verdict !== undefined ? { verdict: r.verdict as DetectionVerdict } : {}),
+    ...(r.isSpecialCategory !== undefined ? { isSpecialCategory: r.isSpecialCategory as boolean } : {}),
+  };
+}
+
+function coerceCriterion(raw: unknown): CriterionDef | null {
+  if (!raw || typeof raw !== "object") return null;
+  const c = raw as Record<string, unknown>;
+  if (!isCriterionCode(c.code)) return null;
+  const mode = c.evaluationMode === "intrinsic" ? "intrinsic" : "contextual";
+  return {
+    code: c.code,
+    nameEn: typeof c.nameEn === "string" ? c.nameEn : c.code,
+    nameAr: typeof c.nameAr === "string" ? c.nameAr : "",
+    description: typeof c.description === "string" ? c.description : "",
+    evaluationMode: mode,
+  };
+}
+
+/** Classification rules from the active framework version (fallback: code default). */
+export async function getActiveClassificationRules(): Promise<ClassificationRule[]> {
+  const { definition } = await getActiveFrameworkVersion("classification");
+  const raw = definition.rules;
+  const rules = Array.isArray(raw)
+    ? raw.map(coerceRule).filter((r): r is ClassificationRule => r !== null)
+    : [];
+  return rules.length > 0 ? rules : DEFAULT_CLASSIFICATION_RULES;
+}
+
+/** PII criterion definitions from the active framework version (fallback: code default). */
+export async function getActivePiiCriteria(): Promise<CriterionDef[]> {
+  const { definition } = await getActiveFrameworkVersion("pii");
+  const raw = definition.criteria;
+  const criteria = Array.isArray(raw)
+    ? raw.map(coerceCriterion).filter((c): c is CriterionDef => c !== null)
+    : [];
+  return criteria.length > 0 ? criteria : POLICY_CRITERIA_LIST;
+}
+
+/** Order-independent structural equality of two framework definitions. */
+function definitionsEqual(a: unknown, b: unknown): boolean {
+  const norm = (v: unknown): string =>
+    JSON.stringify(v, (_k, val) =>
+      val && typeof val === "object" && !Array.isArray(val)
+        ? Object.fromEntries(Object.entries(val as Record<string, unknown>).sort(([x], [y]) => x.localeCompare(y)))
+        : val,
+    );
+  return norm(a) === norm(b);
+}
+
+/**
+ * Keep the AUTO-SEEDED (author-less) active version in line with the current code
+ * default. While the packaged framework is still being developed we refresh that
+ * seeded version IN PLACE — no new version is minted — so it always mirrors the
+ * code and stays on its original label (v1.0). A version authored by a steward
+ * (authorId set) is never auto-touched; formal immutable versioning begins there.
+ */
+export async function reconcileFramework(type: FrameworkType): Promise<void> {
+  await ensureFramework(type);
+  const [fw] = await db.select().from(frameworks).where(eq(frameworks.type, type)).limit(1);
+  if (!fw?.activeVersionId) return;
+  const [active] = await db
+    .select()
+    .from(frameworkVersions)
+    .where(eq(frameworkVersions.id, fw.activeVersionId))
+    .limit(1);
+  if (!active || active.authorId != null) return; // steward-edited -> leave it alone
+  const target = defaultDefinition(type);
+  if (definitionsEqual(active.definition, target)) return;
+  await db
+    .update(frameworkVersions)
+    .set({ definition: target })
+    .where(eq(frameworkVersions.id, active.id));
 }

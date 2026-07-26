@@ -4,9 +4,9 @@ import { rollupAssetLevel } from "../../server/classification-engine/rollup";
 
 describe("classification rollup precedence", () => {
   it("takes the high-water-mark (highest rank) across attribute levels", () => {
-    expect(rollupLevel(["PUBLIC", "INTERNAL", "CONFIDENTIAL"])).toBe("CONFIDENTIAL");
-    expect(rollupLevel(["PUBLIC", "SECRET", "INTERNAL"])).toBe("SECRET");
-    expect(rollupLevel(["PUBLIC", "PUBLIC"])).toBe("PUBLIC");
+    expect(rollupLevel(["OPEN", "CONFIDENTIAL", "SENSITIVE"])).toBe("SENSITIVE");
+    expect(rollupLevel(["OPEN", "SECRET", "CONFIDENTIAL"])).toBe("SECRET");
+    expect(rollupLevel(["OPEN", "OPEN"])).toBe("OPEN");
   });
 
   it("returns null for an empty set", () => {
@@ -14,15 +14,15 @@ describe("classification rollup precedence", () => {
   });
 
   it("resolves ties to the more restrictive level", () => {
-    expect(moreRestrictive("CONFIDENTIAL", "INTERNAL")).toBe("CONFIDENTIAL");
-    expect(moreRestrictive("PUBLIC", "SECRET")).toBe("SECRET");
+    expect(moreRestrictive("SENSITIVE", "CONFIDENTIAL")).toBe("SENSITIVE");
+    expect(moreRestrictive("OPEN", "SECRET")).toBe("SECRET");
     expect(moreRestrictive("CONFIDENTIAL", "CONFIDENTIAL")).toBe("CONFIDENTIAL");
   });
 
   it("names the driving attribute(s) in the asset rollup", () => {
     const result = rollupAssetLevel([
       { attributeId: 1, columnName: "email", level: "CONFIDENTIAL" },
-      { attributeId: 2, columnName: "created_at", level: "PUBLIC" },
+      { attributeId: 2, columnName: "created_at", level: "OPEN" },
       { attributeId: 3, columnName: "national_id", level: "CONFIDENTIAL" },
     ]);
     expect(result.level).toBe("CONFIDENTIAL");

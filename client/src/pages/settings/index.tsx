@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Bot, FileCog, ScrollText, SlidersHorizontal, ShieldCheck } from "lucide-react";
+import { Bot, ChevronDown, ChevronRight, ChevronUp, FileCog, Plus, ScrollText, SlidersHorizontal, ShieldCheck, Trash2 } from "lucide-react";
+import { CRITERION_CODES } from "@shared/lib/criteria";
+import { CLASSIFICATION_CODES } from "@shared/lib/classification";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useLanguage } from "@/hooks/useLanguage";
 import { useToast } from "@/hooks/use-toast";
@@ -175,26 +177,31 @@ function AiSettings() {
 // --- Framework editor (generic) ------------------------------------------
 interface FrameworkVersionRow { id: number; version: string; changeNote: string | null; createdAt: string }
 
+type Definition = Record<string, any>;
+
 function FrameworkEditor({ type }: { type: "pii" | "classification" }) {
   const { toast } = useToast();
-  const active = useQuery<{ version: string; definition: Record<string, unknown> }>({ queryKey: [`/api/frameworks/${type}`] });
+  const active = useQuery<{ version: string; definition: Definition }>({ queryKey: [`/api/frameworks/${type}`] });
   const versions = useQuery<FrameworkVersionRow[]>({ queryKey: [`/api/frameworks/${type}/versions`] });
-  const [draft, setDraft] = useState("");
+  const [def, setDef] = useState<Definition | null>(null);
+  const [mode, setMode] = useState<"structured" | "json">("structured");
+  const [jsonDraft, setJsonDraft] = useState("");
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (active.data) setDraft(JSON.stringify(active.data.definition, null, 2));
+    if (active.data) { setDef(active.data.definition); setError(null); }
   }, [active.data]);
 
   const saveMutation = useMutation({
-    mutationFn: (definition: Record<string, unknown>) => apiRequest("PUT", `/api/frameworks/${type}`, { definition, changeNote: note }),
+    mutationFn: (definition: Definition) => apiRequest("PUT", `/api/frameworks/${type}`, { definition, changeNote: note }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [`/api/frameworks/${type}`] });
       queryClient.invalidateQueries({ queryKey: [`/api/frameworks/${type}/versions`] });
       setNote("");
       toast({ title: "New framework version saved" });
     },
+    onError: (e: Error) => setError(e.message),
   });
   const restoreMutation = useMutation({
     mutationFn: (versionId: number) => apiRequest("POST", `/api/frameworks/${type}/restore/${versionId}`),
@@ -205,14 +212,21 @@ function FrameworkEditor({ type }: { type: "pii" | "classification" }) {
     },
   });
 
+  const enterJson = () => { setJsonDraft(JSON.stringify(def, null, 2)); setError(null); setMode("json"); };
+  const enterStructured = () => {
+    try { setDef(JSON.parse(jsonDraft)); setError(null); setMode("structured"); }
+    catch { setError("Invalid JSON — fix it before switching to the form."); }
+  };
+
   const onSave = () => {
-    try {
-      const parsed = JSON.parse(draft);
-      setError(null);
-      saveMutation.mutate(parsed);
-    } catch {
-      setError("Invalid JSON.");
+    let payload = def;
+    if (mode === "json") {
+      try { payload = JSON.parse(jsonDraft); setDef(payload); }
+      catch { setError("Invalid JSON."); return; }
     }
+    if (!payload) return;
+    setError(null);
+    saveMutation.mutate(payload);
   };
 
   const versionColumns: Column<FrameworkVersionRow>[] = [
@@ -233,7 +247,18 @@ function FrameworkEditor({ type }: { type: "pii" | "classification" }) {
           <Alert tone="warning" title="Every save creates a new immutable version.">
             Approved runs stay pinned to the version they used; staged runs referencing the previous version should be re-run.
           </Alert>
-          <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={16} className="font-mono text-xs" />
+          <div className="flex justify-end">
+            <button type="button" className="text-xs text-primary underline" onClick={mode === "structured" ? enterJson : enterStructured}>
+              {mode === "structured" ? "Advanced (raw JSON)" : "Back to form"}
+            </button>
+          </div>
+          {mode === "structured" && def ? (
+            type === "pii"
+              ? <PiiEditor def={def} onChange={setDef} />
+              : <ClassificationEditor def={def} onChange={setDef} />
+          ) : (
+            <Textarea value={jsonDraft} onChange={(e) => setJsonDraft(e.target.value)} rows={18} className="font-mono text-xs" />
+          )}
           {error && <p className="text-sm text-destructive">{error}</p>}
           <div className="flex items-center gap-2">
             <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Change note" className="max-w-xs" />
@@ -249,6 +274,265 @@ function FrameworkEditor({ type }: { type: "pii" | "classification" }) {
           <DataTable columns={versionColumns} rows={versions.data ?? []} getRowKey={(r) => r.id} loading={versions.isLoading} />
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function Sel({ value, onChange, options, className }: {
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+  className?: string;
+}) {
+  return (
+    <select
+      className={cn("h-9 w-full rounded-md border border-input bg-background px-2 text-sm", className)}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+    </select>
+  );
+}
+
+/** One expandable row: a summary header (with optional right-aligned actions) that
+ *  opens a roomy editor body in place. */
+function AccordionRow({ open, onToggle, summary, actions, children }: {
+  open: boolean;
+  onToggle: () => void;
+  summary: React.ReactNode;
+  actions?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-md border">
+      <div className="flex items-center gap-1 pe-2">
+        <button type="button" onClick={onToggle} className="flex flex-1 items-center gap-2 rounded-md p-3 text-start hover:bg-accent/50">
+          <ChevronRight className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
+          <div className="min-w-0 flex-1">{summary}</div>
+        </button>
+        {actions && <div className="flex shrink-0 items-center gap-0.5">{actions}</div>}
+      </div>
+      {open && <div className="border-t p-4">{children}</div>}
+    </div>
+  );
+}
+
+/** Explains how the current framework feeds the pipeline (PII → classification → roll-up). */
+function FlowHint({ type }: { type: "pii" | "classification" }) {
+  return (
+    <div className="rounded-md border border-primary/20 bg-primary/5 p-3 text-xs leading-relaxed text-muted-foreground">
+      {type === "pii" ? (
+        <p>
+          <span className="font-medium text-foreground">How this is used: </span>
+          each criterion is a test the engine applies to decide whether a column is personal data and which reason applies.
+          A criterion&apos;s <span className="font-medium">description is sent to the AI as guidance</span>. The result — a
+          verdict + criterion — then flows into the <span className="font-medium">Classification rules</span>.
+        </p>
+      ) : (
+        <p>
+          <span className="font-medium text-foreground">How this is used: </span>
+          rules read the PII engine&apos;s output for each column — <span className="font-mono">verdict</span>,{" "}
+          <span className="font-mono">criterion</span>, and the special-category flag — and turn it into a level
+          (top-down, first match wins). A table then inherits its <span className="font-medium">most sensitive</span>{" "}
+          column&apos;s level (roll-up).
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Human-readable "When …" clause for a classification rule's match conditions. */
+function ruleSentence(r: any): string {
+  const conds: string[] = [];
+  if (r.isSpecialCategory === true) conds.push("data is special-category");
+  else if (r.isSpecialCategory === false) conds.push("data is not special-category");
+  if (r.criterion) conds.push(`criterion is ${r.criterion}`);
+  if (r.verdict) conds.push(`verdict is ${r.verdict}`);
+  return `When ${conds.length ? conds.join(" and ") : "any data"}`;
+}
+
+function PiiEditor({ def, onChange }: { def: Definition; onChange: (d: Definition) => void }) {
+  const [open, setOpen] = useState<string | null>(null);
+  const criteria: any[] = Array.isArray(def.criteria) ? def.criteria : [];
+  const patchCrit = (i: number, patch: Record<string, unknown>) =>
+    onChange({ ...def, criteria: criteria.map((c, idx) => (idx === i ? { ...c, ...patch } : c)) });
+
+  return (
+    <div className="space-y-4">
+      <FlowHint type="pii" />
+
+      <div className="space-y-2">
+        {criteria.map((c, i) => {
+          const key = c.code ?? String(i);
+          return (
+            <AccordionRow
+              key={key}
+              open={open === key}
+              onToggle={() => setOpen(open === key ? null : key)}
+              summary={
+                <div className="flex items-center gap-3">
+                  <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{c.code}</span>
+                  <span className="truncate font-medium">{c.nameEn}</span>
+                  <Badge variant="outline" className="ms-auto shrink-0 font-normal">{c.evaluationMode ?? "contextual"}</Badge>
+                </div>
+              }
+            >
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Name (EN)</Label>
+                  <Input value={c.nameEn ?? ""} onChange={(e) => patchCrit(i, { nameEn: e.target.value })} />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Name (AR)</Label>
+                  <Input dir="rtl" value={c.nameAr ?? ""} onChange={(e) => patchCrit(i, { nameAr: e.target.value })} />
+                </div>
+                <div className="space-y-1 sm:col-span-2">
+                  <Label className="text-xs text-muted-foreground">Description <span className="font-normal">(sent to the AI as guidance)</span></Label>
+                  <Textarea className="min-h-[140px] resize-y" value={c.description ?? ""} onChange={(e) => patchCrit(i, { description: e.target.value })} />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Evaluation mode</Label>
+                  <Sel className="w-48" value={c.evaluationMode ?? "contextual"} onChange={(v) => patchCrit(i, { evaluationMode: v })}
+                    options={[{ value: "intrinsic", label: "intrinsic" }, { value: "contextual", label: "contextual" }]} />
+                </div>
+              </div>
+            </AccordionRow>
+          );
+        })}
+      </div>
+
+    </div>
+  );
+}
+
+function ClassificationEditor({ def, onChange }: { def: Definition; onChange: (d: Definition) => void }) {
+  const [open, setOpen] = useState<string | null>(null);
+  const levels: any[] = Array.isArray(def.levels) ? def.levels : [];
+  const rules: any[] = Array.isArray(def.rules) ? def.rules : [];
+  const ANY = "";
+  const critOptions = [{ value: ANY, label: "any criterion" }, ...CRITERION_CODES.map((c) => ({ value: c, label: c }))];
+  const verdictOptions = [{ value: ANY, label: "any verdict" }, ...["pii", "not_pii", "uncertain"].map((v) => ({ value: v, label: v }))];
+  const specialOptions = [{ value: ANY, label: "any data" }, { value: "true", label: "special-category" }, { value: "false", label: "not special-category" }];
+  const levelOptions = CLASSIFICATION_CODES.map((c) => ({ value: c, label: c }));
+  const colorOptions = ["success", "info", "warning", "destructive", "muted"].map((t) => ({ value: t, label: t }));
+
+  const patchLevel = (i: number, patch: Record<string, unknown>) =>
+    onChange({ ...def, levels: levels.map((l, idx) => (idx === i ? { ...l, ...patch } : l)) });
+  const setRules = (next: any[]) => onChange({ ...def, rules: next });
+  const patchRule = (i: number, patch: Record<string, unknown>) =>
+    setRules(rules.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  const move = (i: number, dir: number) => {
+    const j = i + dir;
+    if (j < 0 || j >= rules.length) return;
+    const next = rules.slice();
+    [next[i], next[j]] = [next[j], next[i]];
+    setRules(next);
+  };
+  const setOpt = (i: number, key: string, v: string) => {
+    const r = { ...rules[i] };
+    if (v === ANY) delete r[key];
+    else r[key] = key === "isSpecialCategory" ? v === "true" : v;
+    setRules(rules.map((x, idx) => (idx === i ? r : x)));
+  };
+
+  return (
+    <div className="space-y-5">
+      <FlowHint type="classification" />
+
+      <div>
+        <p className="mb-2 text-sm font-medium">Confidentiality levels <span className="font-normal text-muted-foreground">(least → most sensitive)</span></p>
+        <div className="overflow-x-auto rounded-md border">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/40 text-xs text-muted-foreground">
+              <tr>
+                <th className="p-3 text-start">Rank</th>
+                <th className="p-3 text-start">Code</th>
+                <th className="p-3 text-start">Label (EN)</th>
+                <th className="p-3 text-start">Label (AR)</th>
+                <th className="p-3 text-start">Color</th>
+              </tr>
+            </thead>
+            <tbody>
+              {levels.map((l, i) => (
+                <tr key={l.code ?? i} className="border-t">
+                  <td className="p-3 text-xs text-muted-foreground">{l.rank}</td>
+                  <td className="p-3 font-mono text-xs">{l.code}</td>
+                  <td className="p-3"><Input value={l.labelEn ?? ""} onChange={(e) => patchLevel(i, { labelEn: e.target.value })} /></td>
+                  <td className="p-3"><Input dir="rtl" value={l.labelAr ?? ""} onChange={(e) => patchLevel(i, { labelAr: e.target.value })} /></td>
+                  <td className="w-40 p-3"><Sel value={l.colorToken ?? "muted"} onChange={(v) => patchLevel(i, { colorToken: v })} options={colorOptions} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div>
+        <p className="mb-2 text-sm font-medium">Rules <span className="font-normal text-muted-foreground">(top-down, first match wins)</span></p>
+        <div className="space-y-2">
+          {rules.map((r, i) => {
+            const key = r.id ?? String(i);
+            return (
+              <AccordionRow
+                key={key}
+                open={open === key}
+                onToggle={() => setOpen(open === key ? null : key)}
+                summary={
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="text-xs text-muted-foreground">{i + 1}.</span>
+                    <span>{ruleSentence(r)}</span>
+                    <span className="text-muted-foreground">→</span>
+                    <Badge variant="secondary">{r.level}</Badge>
+                  </div>
+                }
+                actions={
+                  <>
+                    <button type="button" className="p-1 text-muted-foreground disabled:opacity-30" disabled={i === 0} onClick={() => move(i, -1)}><ChevronUp className="h-4 w-4" /></button>
+                    <button type="button" className="p-1 text-muted-foreground disabled:opacity-30" disabled={i === rules.length - 1} onClick={() => move(i, 1)}><ChevronDown className="h-4 w-4" /></button>
+                    <Button size="icon" variant="ghost" onClick={() => setRules(rules.filter((_, idx) => idx !== i))}><Trash2 className="h-4 w-4" /></Button>
+                  </>
+                }
+              >
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-end gap-3">
+                    <span className="pb-2 text-sm text-muted-foreground">When</span>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Data</Label>
+                      <Sel className="w-52" value={r.isSpecialCategory === undefined ? ANY : String(r.isSpecialCategory)} onChange={(v) => setOpt(i, "isSpecialCategory", v)} options={specialOptions} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Criterion</Label>
+                      <Sel className="w-44" value={r.criterion ?? ANY} onChange={(v) => setOpt(i, "criterion", v)} options={critOptions} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Verdict</Label>
+                      <Sel className="w-40" value={r.verdict ?? ANY} onChange={(v) => setOpt(i, "verdict", v)} options={verdictOptions} />
+                    </div>
+                    <span className="pb-2 text-sm text-muted-foreground">→ classify as</span>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Level</Label>
+                      <Sel className="w-40" value={r.level ?? "CONFIDENTIAL"} onChange={(v) => patchRule(i, { level: v })} options={levelOptions} />
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Note <span className="font-normal">(shown as the rationale on classified columns)</span></Label>
+                    <Input value={r.note ?? ""} onChange={(e) => patchRule(i, { note: e.target.value })} />
+                  </div>
+                </div>
+              </AccordionRow>
+            );
+          })}
+        </div>
+        <Button className="mt-2" size="sm" variant="outline" onClick={() => setRules([...rules, { id: `rule-${rules.length + 1}`, verdict: "pii", level: "CONFIDENTIAL", note: "" }])}>
+          <Plus className="mr-1 h-4 w-4" /> Add rule
+        </Button>
+      </div>
+
+      <div className="space-y-1">
+        <Label className="text-sm font-medium">Roll-up precedence</Label>
+        <Input value={def.rollup ?? ""} onChange={(e) => onChange({ ...def, rollup: e.target.value })} />
+      </div>
     </div>
   );
 }

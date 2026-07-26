@@ -90,14 +90,15 @@ export async function bulkCatalogAction(
   let changed = 0;
   for (const asset of assetRows) {
     if (action === "assign-steward") {
-      await db.update(assets).set({ stewards: value }).where(eq(assets.id, asset.id));
+      const stewards = [...new Set([...(asset.stewards ?? []), value])];
+      await db.update(assets).set({ stewards }).where(eq(assets.id, asset.id));
       await db.insert(auditLog).values({
         actorId: actorId ?? undefined,
         action: "bulk_assign_steward",
         entityType: "asset",
         entityId: String(asset.id),
         before: { stewards: asset.stewards },
-        after: { stewards: value },
+        after: { stewards },
         rationale: "Bulk steward assignment.",
         source: "steward",
       });

@@ -35,6 +35,7 @@ interface CompletionReport {
     attributes: number;
     fullyComplete: number;
     missingPdtcFields: number;
+    incompleteTotal: number;
     fieldTotals: Record<string, { present: number; total: number }>;
   };
 }
@@ -135,7 +136,16 @@ export default function CoveragePage() {
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">{lang === "ar" ? "سمات غير مكتملة" : "Attributes with incomplete metadata"}</CardTitle></CardHeader>
+        <CardHeader>
+          <CardTitle className="text-base">{lang === "ar" ? "سمات غير مكتملة" : "Attributes with incomplete metadata"}</CardTitle>
+          {summary && summary.incompleteTotal > incompleteRows.length && (
+            <p className="text-xs text-muted-foreground">
+              {lang === "ar"
+                ? `عرض أول ${incompleteRows.length} من ${summary.incompleteTotal}`
+                : `Showing first ${incompleteRows.length} of ${summary.incompleteTotal}`}
+            </p>
+          )}
+        </CardHeader>
         <CardContent>
           <DataTable columns={columns} rows={incompleteRows} getRowKey={(r) => r.attributeId} loading={completionQuery.isLoading} emptyTitle={lang === "ar" ? "كل السمات مكتملة" : "All attributes complete"} />
         </CardContent>

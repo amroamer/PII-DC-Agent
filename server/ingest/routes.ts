@@ -1,27 +1,41 @@
 import type { Express } from "express";
 import multer from "multer";
 import { randomUUID } from "node:crypto";
-import { autoMapColumns, requiredFields, type IkcSheetType } from "@shared/lib/ikc-fields";
 import { asyncHandler, HttpError, requireAuth } from "../http";
-import { guessSheetType, parseWorkbook } from "./parse";
-import { getIngestRun, getRunCounts, listIngestRuns, runImport } from "./import";
+import type { User } from "@shared/models/schema";
+import { parseTwoSheetWorkbook } from "./parse";
+import {
+  applyIngestPlan,
+  buildPreview,
+  computeIngestPlan,
+  listIngestRuns,
+  type IngestPlan,
+} from "./import";
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 },
+  limits: { fileSize: 50 * 1024 * 1024 },
 });
 
-interface CachedUpload {
-  filename: string;
-  sheetType: IkcSheetType;
-  headers: string[];
-  rows: Record<string, unknown>[];
+interface CachedPlan {
+  plan: IngestPlan;
+  createdAt: number;
 }
 
-// Parsed uploads live in memory until the steward confirms the mapping + import.
-const uploadCache = new Map<string, CachedUpload>();
+// Computed plans live in memory between the review (upload) and the apply step.
+const planCache = new Map<string, CachedPlan>();
+const PLAN_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+function prunePlans(): void {
+  const cutoff = Date.now() - PLAN_TTL_MS;
+  for (const [id, entry] of planCache) {
+    if (entry.createdAt < cutoff) planCache.delete(id);
+  }
+}
 
 export function registerIngestRoutes(app: Express): void {
+  // Step 1 — upload the two-sheet workbook, diff it, and return a review preview.
+  // Nothing is written to the catalog here.
   app.post(
     "/api/ingest/upload",
     requireAuth,
@@ -30,67 +44,34 @@ export function registerIngestRoutes(app: Express): void {
       const file = req.file;
       if (!file) throw new HttpError(400, "No file uploaded (form field name: file).");
 
-      const parsed = parseWorkbook(file.buffer);
-      if (parsed.headers.length === 0) {
-        throw new HttpError(400, "Could not read any columns from the workbook.");
+      const sheets = parseTwoSheetWorkbook(file.buffer);
+      if (!sheets.assetSheet && !sheets.columnSheet) {
+        throw new HttpError(400, "Could not read an Asset or Columns sheet from the workbook.");
       }
 
-      const sheetType =
-        typeof req.body?.sheetType === "string"
-          ? (req.body.sheetType as IkcSheetType)
-          : guessSheetType(parsed.headers);
-      const mapping = autoMapColumns(parsed.headers, sheetType);
+      const plan = await computeIngestPlan(sheets, file.originalname);
+      prunePlans();
       const uploadId = randomUUID();
+      planCache.set(uploadId, { plan, createdAt: Date.now() });
 
-      uploadCache.set(uploadId, {
-        filename: file.originalname,
-        sheetType,
-        headers: parsed.headers,
-        rows: parsed.rows,
-      });
-
-      res.json({
-        uploadId,
-        filename: file.originalname,
-        sheetType,
-        headers: parsed.headers,
-        mapping,
-        rowCount: parsed.rows.length,
-        preview: parsed.rows.slice(0, 5),
-        requiredFields: requiredFields(sheetType).map((f) => f.key),
-      });
+      res.json({ uploadId, ...buildPreview(plan) });
     }),
   );
 
+  // Step 2 — apply the previously computed plan (only new rows + changed fields).
   app.post(
-    "/api/ingest/import",
+    "/api/ingest/apply",
     requireAuth,
     asyncHandler(async (req, res) => {
       const uploadId = typeof req.body?.uploadId === "string" ? req.body.uploadId : "";
       if (!uploadId) throw new HttpError(400, "uploadId is required.");
 
-      const cached = uploadCache.get(uploadId);
+      const cached = planCache.get(uploadId);
       if (!cached) throw new HttpError(404, "Upload not found or expired — please re-upload.");
 
-      const sheetType = (req.body?.sheetType as IkcSheetType) ?? cached.sheetType;
-      const mapping: Record<string, string | null> =
-        req.body?.mapping ?? autoMapColumns(cached.headers, sheetType);
-
-      const missing = requiredFields(sheetType).filter((f) => !mapping[f.key]);
-      if (missing.length > 0) {
-        throw new HttpError(
-          400,
-          `Unmapped required fields: ${missing.map((f) => f.header).join(", ")}`,
-        );
-      }
-
-      const summary = await runImport({
-        filename: cached.filename,
-        sheetType,
-        mapping,
-        rows: cached.rows,
-      });
-      uploadCache.delete(uploadId);
+      const user = req.user as User | undefined;
+      const summary = await applyIngestPlan(cached.plan, user?.id ?? null);
+      planCache.delete(uploadId);
       res.json(summary);
     }),
   );
@@ -100,19 +81,6 @@ export function registerIngestRoutes(app: Express): void {
     requireAuth,
     asyncHandler(async (_req, res) => {
       res.json(await listIngestRuns());
-    }),
-  );
-
-  app.get(
-    "/api/ingest/runs/:id",
-    requireAuth,
-    asyncHandler(async (req, res) => {
-      const id = Number(String(req.params.id));
-      if (Number.isNaN(id)) throw new HttpError(400, "Invalid run id.");
-      const run = await getIngestRun(id);
-      if (!run) throw new HttpError(404, "Ingest run not found.");
-      const counts = await getRunCounts(id);
-      res.json({ ...run, counts });
     }),
   );
 }

@@ -109,9 +109,10 @@ the class-library layers; contextual criteria need the LLM layer and/or the co-o
 pass. When detection layers disagree, the item is written `uncertain` and forced into the
 review queue at high priority — the engine never silently picks a winner.
 
-### The ISMS classification scale
-`PUBLIC < INTERNAL < CONFIDENTIAL < SECRET` (by `rank`) — defined in
-`shared/lib/classification.ts`. Assets take the **high-water-mark** (max rank) of their
+### The WoG classification scale
+`OPEN < CONFIDENTIAL < SENSITIVE < SECRET` (by `rank`) — the DGE Whole-of-Government Data
+Classification Framework v1.0 scale, defined in `shared/lib/classification.ts`. Confidential
+is the default level for all data. Assets take the **high-water-mark** (max rank) of their
 attributes; a steward override always wins over a computed rollup and is re-evaluated (and
 flagged, not overwritten) on the next run.
 

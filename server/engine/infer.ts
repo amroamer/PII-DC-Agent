@@ -167,6 +167,7 @@ export async function inferPiiForAttribute(
     modelId: ctx.modelId,
     engineVersion: ctx.engineVersion,
     schemaVersion: PII_SCHEMA_VERSION,
+    systemPrompt: ctx.systemPrompt,
   });
 
   // Deterministic base (layers 1–2).

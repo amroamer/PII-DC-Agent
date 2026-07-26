@@ -12,7 +12,7 @@
  *  - batches derived from the sorted list + a fixed size (reproducible boundaries)
  */
 import { createHash } from "node:crypto";
-import type { Asset, Attribute } from "@shared/models/schema";
+import type { Attribute } from "@shared/models/schema";
 
 export const SENTINEL = "␀"; // single sentinel for null/empty
 
@@ -37,7 +37,7 @@ export interface CanonicalAttribute {
 
 export function canonicalizeAttribute(
   attr: Pick<Attribute, "assetId" | "columnName" | "descriptionEn" | "descriptionAr" | "dataType" | "nativeType">,
-  asset: Pick<Asset, "name" | "businessDomain" | "subjectArea"> | undefined,
+  asset: { name: string; businessDomain: string | null; subjectArea: string | null } | undefined,
   siblings: string[],
 ): CanonicalAttribute {
   // Keys are emitted in this fixed declared order.
@@ -84,6 +84,9 @@ export interface HashInputs {
   modelId: string;
   engineVersion: string;
   schemaVersion: string;
+  /** The fully-composed system prompt (incl. injected criteria) — any change to it
+   *  must miss the cache, independent of the frameworkVersion label. */
+  systemPrompt: string;
 }
 
 /** sha256 over canonical payload + all version identifiers (Prompt 2 §7.3). */
@@ -95,6 +98,7 @@ export function computeInputHash(inputs: HashInputs): string {
     inputs.modelId,
     inputs.engineVersion,
     inputs.schemaVersion,
+    inputs.systemPrompt,
   ].join("␟");
   return createHash("sha256").update(material).digest("hex");
 }

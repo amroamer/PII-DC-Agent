@@ -14,7 +14,11 @@ import {
   listVersions,
   restoreVersion,
 } from "./store";
+import { CRITERION_CODES, isCriterionCode } from "@shared/lib/criteria";
+import { isClassificationCode } from "@shared/lib/classification";
 import { db } from "../db";
+
+const RULE_VERDICTS = ["pii", "not_pii", "uncertain"];
 
 function frameworkType(raw: unknown): FrameworkType {
   if (raw === "pii" || raw === "classification") return raw;
@@ -22,7 +26,7 @@ function frameworkType(raw: unknown): FrameworkType {
 }
 
 /** Structural validation of an imported/edited framework definition (Prompt 2 §10). */
-function validateDefinition(type: FrameworkType, definition: unknown): Record<string, unknown> {
+export function validateDefinition(type: FrameworkType, definition: unknown): Record<string, unknown> {
   if (!definition || typeof definition !== "object" || Array.isArray(definition)) {
     throw new HttpError(400, "Framework definition must be an object.");
   }
@@ -31,12 +35,42 @@ function validateDefinition(type: FrameworkType, definition: unknown): Record<st
     if (!Array.isArray(def.criteria) || def.criteria.length === 0) {
       throw new HttpError(400, "PII framework must define a non-empty `criteria` array.");
     }
+    const seen = new Set<string>();
+    for (const raw of def.criteria) {
+      const c = (raw ?? {}) as Record<string, unknown>;
+      if (!isCriterionCode(c.code)) {
+        throw new HttpError(400, `Unknown or missing criterion code: ${JSON.stringify(c.code)}.`);
+      }
+      if (typeof c.nameEn !== "string" || typeof c.nameAr !== "string" || typeof c.description !== "string") {
+        throw new HttpError(400, `Criterion ${c.code} needs string nameEn, nameAr and description.`);
+      }
+      if (c.evaluationMode !== "intrinsic" && c.evaluationMode !== "contextual") {
+        throw new HttpError(400, `Criterion ${c.code} evaluationMode must be "intrinsic" or "contextual".`);
+      }
+      seen.add(c.code);
+    }
+    // The strict LLM schema + merge logic key off the canonical code set — codes are fixed.
+    const missing = CRITERION_CODES.filter((code) => !seen.has(code));
+    if (missing.length || seen.size !== def.criteria.length) {
+      throw new HttpError(
+        400,
+        `PII criteria must be exactly the ${CRITERION_CODES.length} policy codes with no duplicates (${missing.length ? `missing ${missing.join(", ")}` : "duplicate code"}).`,
+      );
+    }
   } else {
     if (!Array.isArray(def.levels) || def.levels.length === 0) {
       throw new HttpError(400, "Classification framework must define a non-empty `levels` array.");
     }
     if (!Array.isArray(def.rules)) {
       throw new HttpError(400, "Classification framework must define a `rules` array.");
+    }
+    for (const raw of def.rules) {
+      const r = (raw ?? {}) as Record<string, unknown>;
+      if (typeof r.id !== "string") throw new HttpError(400, "Each classification rule needs a string `id`.");
+      if (!isClassificationCode(r.level)) throw new HttpError(400, `Rule ${r.id} has an unknown level: ${JSON.stringify(r.level)}.`);
+      if (r.criterion !== undefined && !isCriterionCode(r.criterion)) throw new HttpError(400, `Rule ${r.id} has an unknown criterion: ${JSON.stringify(r.criterion)}.`);
+      if (r.verdict !== undefined && !RULE_VERDICTS.includes(r.verdict as string)) throw new HttpError(400, `Rule ${r.id} has an unknown verdict: ${JSON.stringify(r.verdict)}.`);
+      if (r.isSpecialCategory !== undefined && typeof r.isSpecialCategory !== "boolean") throw new HttpError(400, `Rule ${r.id} isSpecialCategory must be a boolean.`);
     }
   }
   return def;

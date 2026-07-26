@@ -5,17 +5,17 @@
  * (processing purpose, consent status) — the fields IKC has no native home for.
  * Feeds the Coverage dashboard.
  */
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "../db";
 import {
   assets,
   attributes,
+  classifications,
   metadataCompletion,
   type Asset,
   type Attribute,
   type MetadataCompletion,
 } from "@shared/models/schema";
-import { getActiveClassification } from "./store";
 
 export interface RequiredMetadataField {
   key: string;
@@ -83,16 +83,20 @@ export interface CompletionReport {
     attributes: number;
     fullyComplete: number;
     missingPdtcFields: number;
+    incompleteTotal: number;
     fieldTotals: Record<string, { present: number; total: number }>;
   };
 }
+
+/** The dashboard lists a sample of incomplete rows; summary counts cover all. */
+const COMPLETION_ROW_CAP = 500;
 
 export async function getCompletionReport(): Promise<CompletionReport> {
   const attrRows = await db.select().from(attributes);
   if (attrRows.length === 0) {
     return {
       rows: [],
-      summary: { attributes: 0, fullyComplete: 0, missingPdtcFields: 0, fieldTotals: {} },
+      summary: { attributes: 0, fullyComplete: 0, missingPdtcFields: 0, incompleteTotal: 0, fieldTotals: {} },
     };
   }
 
@@ -100,13 +104,18 @@ export async function getCompletionReport(): Promise<CompletionReport> {
   const assetRows = await db.select().from(assets).where(inArray(assets.id, assetIds));
   const assetMap = new Map<number, Asset>(assetRows.map((a) => [a.id, a]));
 
-  const completionRows = await db
-    .select()
-    .from(metadataCompletion)
-    .where(inArray(metadataCompletion.attributeId, attrRows.map((a) => a.id)));
+  const completionRows = await db.select().from(metadataCompletion);
   const completionMap = new Map<number, MetadataCompletion>(
     completionRows.map((c) => [c.attributeId, c]),
   );
+
+  // One batch query instead of a per-attribute lookup (was an N+1 over ~21k rows):
+  // the set of attribute ids that carry an active (non-superseded) classification.
+  const classifiedRows = await db
+    .select({ id: classifications.targetId })
+    .from(classifications)
+    .where(and(eq(classifications.scope, "attribute"), isNull(classifications.supersededBy)));
+  const classifiedSet = new Set<number>(classifiedRows.map((r) => r.id));
 
   const rows: CompletionRow[] = [];
   const fieldTotals: Record<string, { present: number; total: number }> = {};
@@ -114,33 +123,36 @@ export async function getCompletionReport(): Promise<CompletionReport> {
 
   let fullyComplete = 0;
   let missingPdtcFields = 0;
+  let incompleteTotal = 0;
 
   for (const attr of attrRows) {
     const asset = assetMap.get(attr.assetId);
-    const active = await getActiveClassification("attribute", attr.id);
     const fields = computeAttributeCompletion(
       attr,
       asset,
-      Boolean(active),
+      classifiedSet.has(attr.id),
       completionMap.get(attr.id),
     );
 
     const completeCount = fields.filter((f) => f.present).length;
     if (completeCount === fields.length) fullyComplete++;
+    else incompleteTotal++;
     if (fields.some((f) => f.providedBy === "pdtc" && !f.present)) missingPdtcFields++;
     for (const f of fields) {
       fieldTotals[f.key].total++;
       if (f.present) fieldTotals[f.key].present++;
     }
 
-    rows.push({
-      attributeId: attr.id,
-      columnName: attr.columnName,
-      assetName: asset?.name ?? "(unknown asset)",
-      fields,
-      completeCount,
-      totalCount: fields.length,
-    });
+    if (completeCount < fields.length && rows.length < COMPLETION_ROW_CAP) {
+      rows.push({
+        attributeId: attr.id,
+        columnName: attr.columnName,
+        assetName: asset?.name ?? "(unknown asset)",
+        fields,
+        completeCount,
+        totalCount: fields.length,
+      });
+    }
   }
 
   return {
@@ -149,6 +161,7 @@ export async function getCompletionReport(): Promise<CompletionReport> {
       attributes: attrRows.length,
       fullyComplete,
       missingPdtcFields,
+      incompleteTotal,
       fieldTotals,
     },
   };

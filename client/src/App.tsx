@@ -8,7 +8,6 @@ import { LanguageProvider } from "@/context/LanguageContext";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import { AppLayout } from "@/components/AppLayout";
 import LoginPage from "@/pages/login";
-import IngestPage from "@/pages/ingest";
 import DetectionPage from "@/pages/detection";
 import ClassificationPage from "@/pages/classification";
 import ReviewPage from "@/pages/review";
@@ -16,7 +15,6 @@ import CoveragePage from "@/pages/coverage";
 import SettingsPage from "@/pages/settings";
 import AssetsPage from "@/pages/assets";
 import AttributesPage from "@/pages/attributes";
-import ImportPage from "@/pages/import";
 import ImportTestPage from "@/pages/import-test";
 
 function AuthedApp() {
@@ -37,13 +35,11 @@ function AuthedApp() {
       <Switch>
         <Route path="/" component={CoveragePage} />
         <Route path="/coverage" component={CoveragePage} />
-        <Route path="/ingest" component={IngestPage} />
         <Route path="/assets" component={AssetsPage} />
         <Route path="/attributes" component={AttributesPage} />
         <Route path="/detection" component={DetectionPage} />
         <Route path="/classification" component={ClassificationPage} />
         <Route path="/review" component={ReviewPage} />
-        <Route path="/import" component={ImportPage} />
         <Route path="/import-test" component={ImportTestPage} />
         <Route path="/settings">
           {user.role === "admin" ? (

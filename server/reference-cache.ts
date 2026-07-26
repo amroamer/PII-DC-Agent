@@ -8,7 +8,6 @@ import {
   CLASSIFICATION_LEVELS_LIST,
   type ClassificationLevelDef,
 } from "@shared/lib/classification";
-import type { ClassificationRule } from "./classification-engine/attribute-rules";
 
 export interface CachedPrompt {
   key: string;
@@ -83,8 +82,4 @@ export function getCriteria(): CriterionDef[] {
 
 export function getLevels(): ClassificationLevelDef[] {
   return cache.levels;
-}
-
-export function getClassificationRules(): ClassificationRule[] {
-  return getSetting<ClassificationRule[]>("classification_rules") ?? [];
 }

@@ -7,6 +7,7 @@
 import { randomUUID } from "node:crypto";
 import { db } from "../db";
 import { assets, attributes, detections, type NewDetection } from "@shared/models/schema";
+import { joinFacet } from "@shared/lib/facets";
 import { getSetting } from "../reference-cache";
 import type { DetectionInput, DetectionSignal, EngineContext } from "./types";
 import { runIkcClassLayer } from "./layers/ikc-class";
@@ -72,8 +73,8 @@ export async function runDetection(opts: {
         id: asset.id,
         name: asset.name,
         assetType: asset.assetType,
-        businessDomain: asset.businessDomain,
-        subjectArea: asset.subjectArea,
+        businessDomain: joinFacet(asset.businessDomain),
+        subjectArea: joinFacet(asset.subjectArea),
       },
       siblingColumnNames: siblings,
     };

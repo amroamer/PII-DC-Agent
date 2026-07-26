@@ -5,6 +5,7 @@ import { useLanguage } from "@/hooks/useLanguage";
 const TOKEN_CLASS: Record<string, string> = {
   success: "bg-success/15 text-success border-success/30",
   muted: "bg-muted text-muted-foreground border-border",
+  info: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/30",
   warning: "bg-warning/15 text-warning border-warning/30",
   destructive: "bg-destructive/15 text-destructive border-destructive/30",
 };

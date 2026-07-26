@@ -1,9 +1,7 @@
 import { useMemo, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Play, TriangleAlert } from "lucide-react";
-import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useLanguage } from "@/hooks/useLanguage";
-import { useToast } from "@/hooks/use-toast";
 import { CRITERION_CODES, type CriterionCode } from "@shared/lib/criteria";
 import type { Detection, DetectionVerdict } from "@shared/models/schema";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,8 +17,11 @@ import { DataTable, type Column } from "@/components/pdtc/DataTable";
 import { CriterionBadge } from "@/components/pdtc/CriterionBadge";
 import { ConfidenceBar } from "@/components/pdtc/ConfidenceBar";
 import { VerdictPill } from "@/components/pdtc/Pill";
-import { Drawer } from "@/components/pdtc/Drawer";
-import { EvidencePanel, type EvidencePayload } from "@/components/pdtc/EvidencePanel";
+import { AttributeDetailDrawer } from "@/components/pdtc/AttributeDetailDrawer";
+import { EngineWizard } from "@/components/pdtc/EngineWizard";
+import type { Selection } from "@/hooks/useSelection";
+
+const ALL_ATTRS: Selection = { mode: "all-matching", filters: {}, excluded: [] };
 
 interface MergedDecision {
   verdict: DetectionVerdict;
@@ -49,11 +50,13 @@ const ALL = "__all__";
 
 export default function DetectionPage() {
   const { t, lang } = useLanguage();
-  const { toast } = useToast();
   const [criterion, setCriterion] = useState<string>(ALL);
   const [verdict, setVerdict] = useState<string>(ALL);
   const [minConfidence, setMinConfidence] = useState<string>("0");
-  const [selectedDetectionId, setSelectedDetectionId] = useState<number | null>(null);
+  const [detailAttrId, setDetailAttrId] = useState<number | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardScope, setWizardScope] = useState<"all" | "remaining">("all");
+  const totalQuery = useQuery<{ total: number }>({ queryKey: ["/api/catalog/attributes?filters=%7B%7D&page=1&pageSize=1"] });
 
   const queryUrl = useMemo(() => {
     const params = new URLSearchParams();
@@ -65,28 +68,6 @@ export default function DetectionPage() {
   }, [criterion, verdict, minConfidence]);
 
   const resultsQuery = useQuery<ResultsResponse>({ queryKey: [queryUrl] });
-
-  const runMutation = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/pii-detection/runs", { useLlmLayer: true }),
-    onSuccess: (res: any) => {
-      queryClient.invalidateQueries({ queryKey: [queryUrl] });
-      toast({
-        title: "Detection run complete",
-        description: `${res.attributesProcessed} attributes · ${res.piiCount} PII · ${res.conflicts} conflicts · ${res.reviewItemsCreated} queued`,
-      });
-    },
-    onError: (err: Error) => toast({ variant: "destructive", title: "Run failed", description: err.message }),
-  });
-
-  const evidenceQuery = useQuery<EvidencePayload>({
-    queryKey: [`/api/pii-detection/evidence/${selectedDetectionId}`],
-    enabled: selectedDetectionId !== null,
-  });
-
-  function openEvidence(row: ResultRow) {
-    const top = [...row.layers].sort((a, b) => b.confidence - a.confidence)[0];
-    if (top) setSelectedDetectionId(top.id);
-  }
 
   const columns: Column<ResultRow>[] = [
     {
@@ -131,9 +112,14 @@ export default function DetectionPage() {
               : lang === "ar" ? "لم يتم تشغيل أي كشف بعد" : "No detection run yet"}
           </p>
         </div>
-        <Btn icon={<Play className="h-4 w-4" />} loading={runMutation.isPending} onClick={() => runMutation.mutate()}>
-          {t("detection.run")}
-        </Btn>
+        <div className="flex gap-2">
+          <Btn variant="outline" onClick={() => { setWizardScope("remaining"); setWizardOpen(true); }}>
+            {lang === "ar" ? "تشغيل المتبقّي" : "Run the remaining"}
+          </Btn>
+          <Btn icon={<Play className="h-4 w-4" />} onClick={() => { setWizardScope("all"); setWizardOpen(true); }}>
+            {t("detection.run")}
+          </Btn>
+        </div>
       </header>
 
       <Card>
@@ -181,25 +167,25 @@ export default function DetectionPage() {
             rows={resultsQuery.data?.results ?? []}
             getRowKey={(r) => r.attributeId}
             loading={resultsQuery.isLoading}
-            onRowClick={openEvidence}
+            onRowClick={(r) => setDetailAttrId(r.attributeId)}
             emptyTitle="No detections"
             emptyDescription="Run the detection engine over ingested attributes to see flagged results."
           />
         </CardContent>
       </Card>
 
-      <Drawer
-        open={selectedDetectionId !== null}
-        onOpenChange={(open) => !open && setSelectedDetectionId(null)}
-        title={t("detection.evidence")}
-        description={lang === "ar" ? "الأدلة الوصفية التي قادت القرار" : "The metadata evidence behind the verdict"}
-      >
-        {evidenceQuery.data ? (
-          <EvidencePanel payload={evidenceQuery.data} />
-        ) : (
-          <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
-        )}
-      </Drawer>
+      <AttributeDetailDrawer id={detailAttrId} defaultTab="pii" onClose={() => setDetailAttrId(null)} />
+
+      {wizardOpen && (
+        <EngineWizard
+          engineType="pii"
+          screen="attributes"
+          selection={ALL_ATTRS}
+          selectedCount={totalQuery.data?.total ?? 0}
+          initialScope={wizardScope}
+          onClose={() => setWizardOpen(false)}
+        />
+      )}
     </div>
   );
 }

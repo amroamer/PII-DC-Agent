@@ -20,12 +20,18 @@ export interface ClassificationRule {
   note: string;
 }
 
+// Mapping per the DGE WoG Data Classification Framework v1.0 §8.2: personal data
+// defaults to Confidential; health/biometric (special category) is Sensitive;
+// Confidential is the default for all data. Secret is reserved for contextual
+// cases the engine cannot detect from metadata (classified government data,
+// national defense, high-ranking individuals) and is only reached via an IKC
+// floor or a steward override.
 export const DEFAULT_CLASSIFICATION_RULES: ClassificationRule[] = [
   {
     id: "special-category",
     isSpecialCategory: true,
-    level: "SECRET",
-    note: "Special category data is classified Secret.",
+    level: "SENSITIVE",
+    note: "Special category data (health, biometric) is classified Sensitive.",
   },
   {
     id: "direct-id",
@@ -52,8 +58,8 @@ export const DEFAULT_CLASSIFICATION_RULES: ClassificationRule[] = [
     id: "contextual",
     criterion: "CONTEXTUAL",
     verdict: "pii",
-    level: "INTERNAL",
-    note: "Contextual personal data is Internal.",
+    level: "CONFIDENTIAL",
+    note: "Contextual personal data is Confidential.",
   },
   {
     id: "pii-generic",
@@ -64,14 +70,14 @@ export const DEFAULT_CLASSIFICATION_RULES: ClassificationRule[] = [
   {
     id: "uncertain",
     verdict: "uncertain",
-    level: "INTERNAL",
-    note: "Uncertain verdicts are held at Internal pending review.",
+    level: "CONFIDENTIAL",
+    note: "Uncertain verdicts default to Confidential (framework default for all data).",
   },
   {
     id: "not-pii",
     verdict: "not_pii",
-    level: "PUBLIC",
-    note: "Non-personal data defaults to Public.",
+    level: "CONFIDENTIAL",
+    note: "Non-personal data defaults to Confidential; Open requires an affirmative public determination.",
   },
 ];
 
@@ -101,8 +107,8 @@ export function classifyByRules(
       return true;
     }) ?? {
       id: "fallback",
-      level: "INTERNAL" as ClassificationCode,
-      note: "No rule matched; defaulted to Internal.",
+      level: "CONFIDENTIAL" as ClassificationCode,
+      note: "No rule matched; defaulted to Confidential.",
     };
 
   // IKC's existing column classification is a floor — never downgrade below it.

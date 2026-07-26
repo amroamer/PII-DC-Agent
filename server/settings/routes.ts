@@ -7,7 +7,6 @@ import { testConnection } from "../ai-provider";
 import { cacheStats, clearCache } from "../engine/cache";
 import { appendAudit } from "../audit";
 import {
-  getClassificationRules,
   getCriteria,
   getDataClasses,
   getLevels,
@@ -16,6 +15,7 @@ import {
   setPrompt,
   setSetting,
 } from "../reference-cache";
+import { getActiveClassificationRules } from "../frameworks/store";
 
 export function registerSettingsRoutes(app: Express): void {
   // Reference data for the client (criteria, ISMS levels, data-class library).
@@ -64,9 +64,13 @@ export function registerSettingsRoutes(app: Express): void {
     res.json(getDataClasses());
   });
 
-  app.get("/api/settings/rules", requireAuth, (_req, res) => {
-    res.json(getClassificationRules());
-  });
+  app.get(
+    "/api/settings/rules",
+    requireAuth,
+    asyncHandler(async (_req, res) => {
+      res.json(await getActiveClassificationRules());
+    }),
+  );
 
   app.get("/api/settings/thresholds", requireAuth, (_req, res) => {
     res.json({

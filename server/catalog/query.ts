@@ -36,6 +36,32 @@ export interface ListParams {
 const arr = (v: unknown): string[] =>
   Array.isArray(v) ? v.map((x) => String(x)) : v == null || v === "" ? [] : [String(v)];
 
+/**
+ * A bound `IN (...)` value list. drizzle's `sql` template mis-binds a JS array for
+ * `= ANY(${array})` (Postgres: "op ANY/ALL (array) requires array on right side"),
+ * so build an explicit parameter list instead. Callers must guard against empty input.
+ */
+const inList = (values: Array<string | number>): SQL => sql.join(values.map((v) => sql`${v}`), sql`, `);
+
+/**
+ * Overlap predicate for a jsonb string[] column: true when the stored array shares
+ * ANY of `values`. `jsonb_exists_any` is the function form of the `?|` operator
+ * (avoids the `?` placeholder ambiguity). Callers must guard against empty input.
+ */
+const jsonbOverlap = (col: any, values: string[]): SQL =>
+  sql`jsonb_exists_any(${col}, ARRAY[${inList(values)}]::text[])`;
+
+/** Asset facets stored as jsonb string[] (parsed from IKC list literals at import). */
+const JSONB_ARRAY_KEYS = new Set(["businessDomain", "subjectArea", "department", "sector", "stewards"]);
+/** Their snake_case column names, for the distinct-options unnest query. */
+const JSONB_ARRAY_COLS: Record<string, string> = {
+  businessDomain: "business_domain",
+  subjectArea: "subject_area",
+  department: "department",
+  sector: "sector",
+  stewards: "stewards",
+};
+
 function tristate(col: ReturnType<typeof eq> extends never ? never : any, v: unknown): SQL | undefined {
   if (v === true || v === "yes" || v === "true") return eq(col, true);
   if (v === false || v === "no" || v === "false") return eq(col, false);
@@ -80,10 +106,10 @@ function assetConditions(filters: FilterState): SQL[] {
   if (f.ikcAssetId) c.push(ilike(assets.ikcAssetId, `%${String(f.ikcAssetId)}%`));
   if (f.name) c.push(ilike(assets.name, `%${String(f.name)}%`));
   if (arr(f.assetType).length) c.push(inArray(assets.assetType, arr(f.assetType)));
-  if (arr(f.businessDomain).length) c.push(inArray(assets.businessDomain, arr(f.businessDomain)));
-  if (arr(f.subjectArea).length) c.push(inArray(assets.subjectArea, arr(f.subjectArea)));
-  if (arr(f.department).length) c.push(inArray(assets.department, arr(f.department)));
-  if (arr(f.sector).length) c.push(inArray(assets.sector, arr(f.sector)));
+  if (arr(f.businessDomain).length) c.push(jsonbOverlap(assets.businessDomain, arr(f.businessDomain)));
+  if (arr(f.subjectArea).length) c.push(jsonbOverlap(assets.subjectArea, arr(f.subjectArea)));
+  if (arr(f.department).length) c.push(jsonbOverlap(assets.department, arr(f.department)));
+  if (arr(f.sector).length) c.push(jsonbOverlap(assets.sector, arr(f.sector)));
   if (arr(f.ownerId).length) c.push(inArray(assets.ownerId, arr(f.ownerId)));
   if (arr(f.storage).length) c.push(inArray(assets.storage, arr(f.storage)));
   if (arr(f.retentionPeriod).length) c.push(inArray(assets.retentionPeriod, arr(f.retentionPeriod)));
@@ -95,7 +121,7 @@ function assetConditions(filters: FilterState): SQL[] {
     if (values.includes("UNCLASSIFIED")) conds.push(isNull(assets.assetClassification));
     c.push(or(...(conds.filter(Boolean) as SQL[])));
   }
-  if (arr(f.stewards).length) c.push(inArray(assets.stewards, arr(f.stewards)));
+  if (arr(f.stewards).length) c.push(jsonbOverlap(assets.stewards, arr(f.stewards)));
   if (arr(f.creatorId).length) c.push(inArray(assets.creatorId, arr(f.creatorId)));
   if (arr(f.catalogId).length) c.push(inArray(assets.catalogId, arr(f.catalogId)));
   if (arr(f.tableType).length) c.push(inArray(assets.tableType, arr(f.tableType)));
@@ -182,10 +208,10 @@ function attributeConditions(filters: FilterState): SQL[] {
   if (arr(f.selectedDataClassName).length) c.push(inArray(attributes.selectedDataClassName, arr(f.selectedDataClassName)));
   if (f.hasSuggestedClasses === true) c.push(isNotNull(attributes.suggestedClasses));
   else if (f.hasSuggestedClasses === false) c.push(isNull(attributes.suggestedClasses));
-  if (arr(f.businessDomain).length) c.push(inArray(assets.businessDomain, arr(f.businessDomain)));
-  if (arr(f.subjectArea).length) c.push(inArray(assets.subjectArea, arr(f.subjectArea)));
-  if (arr(f.department).length) c.push(inArray(assets.department, arr(f.department)));
-  if (arr(f.sector).length) c.push(inArray(assets.sector, arr(f.sector)));
+  if (arr(f.businessDomain).length) c.push(jsonbOverlap(assets.businessDomain, arr(f.businessDomain)));
+  if (arr(f.subjectArea).length) c.push(jsonbOverlap(assets.subjectArea, arr(f.subjectArea)));
+  if (arr(f.department).length) c.push(jsonbOverlap(assets.department, arr(f.department)));
+  if (arr(f.sector).length) c.push(jsonbOverlap(assets.sector, arr(f.sector)));
   if (arr(f.storage).length) c.push(inArray(assets.storage, arr(f.storage)));
   if (arr(f.assetType).length) c.push(inArray(assets.assetType, arr(f.assetType)));
   c.push(tristate(assets.cdeFlag, f.parentIsCde));
@@ -218,13 +244,17 @@ function attributeConditions(filters: FilterState): SQL[] {
   c.push(existsCol(attributes.descriptionAr, f.hasArDescription));
 
   // Detection-derived predicates via correlated EXISTS on the detections table.
-  if (f.verdict && f.verdict !== "not_analysed") {
-    c.push(sql`EXISTS (SELECT 1 FROM detections d WHERE d.attribute_id = ${attributes.id} AND d.verdict = ${String(f.verdict)})`);
-  } else if (f.verdict === "not_analysed") {
-    c.push(sql`NOT EXISTS (SELECT 1 FROM detections d WHERE d.attribute_id = ${attributes.id})`);
+  // Multi-select: OR across the picked verdicts; "not_analysed" means no detection rows at all.
+  if (arr(f.verdict).length) {
+    const values = arr(f.verdict);
+    const real = values.filter((v) => v !== "not_analysed");
+    const conds: SQL[] = [];
+    if (real.length) conds.push(sql`EXISTS (SELECT 1 FROM detections d WHERE d.attribute_id = ${attributes.id} AND d.verdict IN (${inList(real)}))`);
+    if (values.includes("not_analysed")) conds.push(sql`NOT EXISTS (SELECT 1 FROM detections d WHERE d.attribute_id = ${attributes.id})`);
+    if (conds.length) c.push(or(...conds));
   }
   if (arr(f.criterion).length) {
-    c.push(sql`EXISTS (SELECT 1 FROM detections d WHERE d.attribute_id = ${attributes.id} AND d.criterion_code = ANY(${arr(f.criterion)}))`);
+    c.push(sql`EXISTS (SELECT 1 FROM detections d WHERE d.attribute_id = ${attributes.id} AND d.criterion_code IN (${inList(arr(f.criterion))}))`);
   }
   if (f.specialCategory === true) {
     c.push(sql`EXISTS (SELECT 1 FROM detections d WHERE d.attribute_id = ${attributes.id} AND d.criterion_code = ${SPECIAL_CATEGORY_CODE})`);
@@ -238,7 +268,7 @@ function attributeConditions(filters: FilterState): SQL[] {
     const values = arr(f.consentStatus);
     const real = values.filter((v) => v !== "Not set");
     const conds: SQL[] = [];
-    if (real.length) conds.push(sql`EXISTS (SELECT 1 FROM metadata_completion mc WHERE mc.attribute_id = ${attributes.id} AND mc.consent_status = ANY(${real}))`);
+    if (real.length) conds.push(sql`EXISTS (SELECT 1 FROM metadata_completion mc WHERE mc.attribute_id = ${attributes.id} AND mc.consent_status IN (${inList(real)}))`);
     if (values.includes("Not set")) conds.push(sql`NOT EXISTS (SELECT 1 FROM metadata_completion mc WHERE mc.attribute_id = ${attributes.id} AND mc.consent_status IS NOT NULL)`);
     if (conds.length) c.push(or(...conds));
   }
@@ -250,7 +280,7 @@ function attributeConditions(filters: FilterState): SQL[] {
 
   // Detection source layer, engine confidence range, criteria-count range, co-occurrence.
   if (arr(f.sourceLayer).length) {
-    c.push(sql`EXISTS (SELECT 1 FROM detections d WHERE d.attribute_id = ${attributes.id} AND d.layer = ANY(${arr(f.sourceLayer)}))`);
+    c.push(sql`EXISTS (SELECT 1 FROM detections d WHERE d.attribute_id = ${attributes.id} AND d.layer IN (${inList(arr(f.sourceLayer))}))`);
   }
   if (f.engineConfidence && typeof f.engineConfidence === "object") {
     const { min, max } = f.engineConfidence as { min?: number; max?: number };
@@ -272,18 +302,18 @@ function attributeConditions(filters: FilterState): SQL[] {
   }
   // Governance metadata (metadata_completion).
   if (arr(f.accessControlLevel).length) {
-    c.push(sql`EXISTS (SELECT 1 FROM metadata_completion mc WHERE mc.attribute_id = ${attributes.id} AND mc.access_control_level = ANY(${arr(f.accessControlLevel)}))`);
+    c.push(sql`EXISTS (SELECT 1 FROM metadata_completion mc WHERE mc.attribute_id = ${attributes.id} AND mc.access_control_level IN (${inList(arr(f.accessControlLevel))}))`);
   }
   c.push(f.processingPurposePresent === true ? sql`EXISTS (SELECT 1 FROM metadata_completion mc WHERE mc.attribute_id = ${attributes.id} AND mc.processing_purpose IS NOT NULL)` : f.processingPurposePresent === false ? sql`NOT EXISTS (SELECT 1 FROM metadata_completion mc WHERE mc.attribute_id = ${attributes.id} AND mc.processing_purpose IS NOT NULL)` : undefined);
   // Review assignment + engine-run + last-analysed.
   if (arr(f.assignedTo).length) {
-    c.push(sql`EXISTS (SELECT 1 FROM review_items r WHERE r.target_id = ${attributes.id} AND r.target_type = 'attribute' AND r.assigned_to = ANY(${arr(f.assignedTo).map(Number)}))`);
+    c.push(sql`EXISTS (SELECT 1 FROM review_items r WHERE r.target_id = ${attributes.id} AND r.target_type = 'attribute' AND r.assigned_to IN (${inList(arr(f.assignedTo).map(Number))}))`);
   }
   if (arr(f.resolvedBy).length) {
-    c.push(sql`EXISTS (SELECT 1 FROM review_items r WHERE r.target_id = ${attributes.id} AND r.target_type = 'attribute' AND r.resolved_by = ANY(${arr(f.resolvedBy).map(Number)}))`);
+    c.push(sql`EXISTS (SELECT 1 FROM review_items r WHERE r.target_id = ${attributes.id} AND r.target_type = 'attribute' AND r.resolved_by IN (${inList(arr(f.resolvedBy).map(Number))}))`);
   }
   if (arr(f.engineRun).length) {
-    c.push(sql`EXISTS (SELECT 1 FROM detections d WHERE d.attribute_id = ${attributes.id} AND d.run_id = ANY(${arr(f.engineRun)}))`);
+    c.push(sql`EXISTS (SELECT 1 FROM detections d WHERE d.attribute_id = ${attributes.id} AND d.run_id IN (${inList(arr(f.engineRun))}))`);
   }
   if (f.lastAnalysed && typeof f.lastAnalysed === "object") {
     const { from, to } = f.lastAnalysed as { from?: string; to?: string };
@@ -417,6 +447,28 @@ export async function distinctOptions(screen: CatalogScreen, key: string) {
   };
   if (screen === "attributes" && RAW_OPTION_SQL[key]) {
     const rows = await db.execute(RAW_OPTION_SQL[key]);
+    const result = (rows.rows as Array<{ value: string; count: number }>).map((r) => ({ value: String(r.value), count: Number(r.count) }));
+    distinctCache.set(cacheKey, result);
+    return result;
+  }
+
+  // jsonb string[] facets (business_domain, …): unnest so each element is its own option.
+  // These are asset-sourced; on the attributes screen they come from the joined asset.
+  if (JSONB_ARRAY_KEYS.has(key)) {
+    const colName = JSONB_ARRAY_COLS[key];
+    const q =
+      screen === "attributes"
+        ? sql.raw(
+            `SELECT elem AS value, count(*)::int AS count ` +
+              `FROM attributes a JOIN assets s ON a.asset_id = s.id, LATERAL jsonb_array_elements_text(s.${colName}) AS elem ` +
+              `WHERE s.${colName} IS NOT NULL AND jsonb_typeof(s.${colName}) = 'array' GROUP BY elem ORDER BY elem`,
+          )
+        : sql.raw(
+            `SELECT elem AS value, count(*)::int AS count ` +
+              `FROM assets, LATERAL jsonb_array_elements_text(${colName}) AS elem ` +
+              `WHERE ${colName} IS NOT NULL AND jsonb_typeof(${colName}) = 'array' GROUP BY elem ORDER BY elem`,
+          );
+    const rows = await db.execute(q);
     const result = (rows.rows as Array<{ value: string; count: number }>).map((r) => ({ value: String(r.value), count: Number(r.count) }));
     distinctCache.set(cacheKey, result);
     return result;

@@ -34,45 +34,43 @@ export interface CriterionDef {
   evaluationMode: EvaluationMode;
 }
 
+// Names + descriptions are taken VERBATIM from the ADC Personal Data Tagging
+// Policy Framework (v0.1), "Criteria for Identifying Personal Data". The `code`
+// and `evaluationMode` are engine-internal (not in the source document).
 export const POLICY_CRITERIA: Record<CriterionCode, CriterionDef> = {
   DIRECT_ID: {
     code: "DIRECT_ID",
-    nameEn: "Direct Identifier",
-    nameAr: "معرّف مباشر",
-    description:
-      "Data that on its own uniquely identifies a natural person (e.g. Emirates ID number, passport number, full name).",
+    nameEn: "Direct Identifiability",
+    nameAr: "القابلية للتعريف المباشر",
+    description: "Data that can identify a person on its own.",
     evaluationMode: "intrinsic",
   },
   INDIRECT_ID: {
     code: "INDIRECT_ID",
-    nameEn: "Indirect Identifier",
-    nameAr: "معرّف غير مباشر",
-    description:
-      "A quasi-identifier that can single out a person when combined with other attributes (e.g. date of birth + nationality + gender).",
+    nameEn: "Indirect Identifiability",
+    nameAr: "القابلية للتعريف غير المباشر",
+    description: "Data that can identify a person when combined with other data.",
     evaluationMode: "contextual",
   },
   REGULATORY: {
     code: "REGULATORY",
-    nameEn: "Regulatory / Legal Designation",
-    nameAr: "تصنيف تنظيمي أو قانوني",
-    description:
-      "Data designated as personal by a governing law or regulation applicable to ADC (e.g. UAE PDPL, customs declarant records).",
+    nameEn: "Regulatory Sensitivity",
+    nameAr: "الحساسية التنظيمية",
+    description: "Data defined as personal under applicable laws.",
     evaluationMode: "contextual",
   },
   CONTEXTUAL: {
     code: "CONTEXTUAL",
-    nameEn: "Contextual Personal Data",
-    nameAr: "بيانات شخصية سياقية",
-    description:
-      "Data that becomes personal because of the context of the asset it belongs to (e.g. a code that is only meaningful inside a traveller record).",
+    nameEn: "Contextual Risk",
+    nameAr: "المخاطر السياقية",
+    description: "Data that may become personal depending on usage or aggregation.",
     evaluationMode: "contextual",
   },
   SPECIAL_CATEGORY: {
     code: "SPECIAL_CATEGORY",
-    nameEn: "Special Category Data",
-    nameAr: "بيانات الفئات الخاصة",
-    description:
-      "Sensitive data requiring heightened protection (e.g. health, biometrics, religious or political affiliation).",
+    nameEn: "Special Categories",
+    nameAr: "الفئات الخاصة",
+    description: "Data requires stricter controls such as health information.",
     evaluationMode: "intrinsic",
   },
 };

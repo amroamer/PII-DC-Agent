@@ -18,14 +18,19 @@ import {
   type EngineType,
   type Selection,
 } from "@shared/models/schema";
-import type { CriterionCode } from "@shared/lib/criteria";
+import type { CriterionCode, CriterionDef } from "@shared/lib/criteria";
 import { CRITERION_CODES } from "@shared/lib/criteria";
 import type { ClassificationCode } from "@shared/lib/classification";
-import { getClassificationRules, getDataClasses, getPrompt, getSetting } from "../reference-cache";
-import { classifyByRules } from "../classification-engine/attribute-rules";
+import { getDataClasses, getPrompt, getSetting } from "../reference-cache";
+import { classifyByRules, type ClassificationRule } from "../classification-engine/attribute-rules";
 import type { CatalogScreen } from "@shared/lib/filter-defs";
+import { joinFacet } from "@shared/lib/facets";
 import { resolveSelection } from "../catalog/query";
-import { getActiveFrameworkVersion } from "../frameworks/store";
+import {
+  getActiveClassificationRules,
+  getActiveFrameworkVersion,
+  getActivePiiCriteria,
+} from "../frameworks/store";
 import { inferPiiForAttribute, type InferContext, type InferDeps } from "./infer";
 import { batchify, sortCanonical } from "../pii-engine/canonicalize";
 import type { DetectionInput } from "../pii-engine/types";
@@ -43,6 +48,23 @@ function activeCriteria(params: Record<string, unknown>): CriterionCode[] {
     return CRITERION_CODES.filter((c) => (requested as string[]).includes(c));
   }
   return [...CRITERION_CODES];
+}
+
+/**
+ * Appends the active framework's criterion definitions to the base detection
+ * prompt so steward edits to a criterion's name/description actually steer the
+ * model. The framework version is part of the inference cache key, so an edit
+ * (which bumps the version) invalidates stale cached verdicts.
+ */
+function composeSystemPrompt(
+  base: string,
+  criteria: CriterionDef[],
+  activeCodes: CriterionCode[],
+): string {
+  const active = criteria.filter((c) => activeCodes.includes(c.code));
+  if (active.length === 0) return base;
+  const block = active.map((c) => `- ${c.code} (${c.nameEn}): ${c.description}`).join("\n");
+  return `${base}\n\nCriteria reference (apply these exact definitions):\n${block}`;
 }
 
 // In-memory cancellation signal. processRun checks it between batches.
@@ -120,6 +142,11 @@ async function prepareRun(input: CreateRunInput, actorId: number | null): Promis
     })
     .returning();
 
+  const codes = activeCriteria(input.params);
+  const piiCriteria = await getActivePiiCriteria();
+  const classificationRules =
+    input.engineType === "classification" ? await getActiveClassificationRules() : [];
+
   const ctx: ProcessCtx = {
     engineType: input.engineType,
     params: input.params,
@@ -129,8 +156,9 @@ async function prepareRun(input: CreateRunInput, actorId: number | null): Promis
     engineVersion,
     framework,
     seed,
-    systemPrompt: getPrompt("pii_detection_classify"),
-    criteria: activeCriteria(input.params),
+    systemPrompt: composeSystemPrompt(getPrompt("pii_detection_classify"), piiCriteria, codes),
+    criteria: codes,
+    classificationRules,
   };
   return { run, targetIds, ctx };
 }
@@ -185,6 +213,7 @@ interface ProcessCtx {
   seed: number;
   systemPrompt: string;
   criteria: CriterionCode[];
+  classificationRules: ClassificationRule[];
 }
 
 async function processRun(
@@ -208,7 +237,7 @@ async function processRun(
     siblingsByAsset.set(a.assetId, list);
   }
 
-  const rules = getClassificationRules();
+  const rules = ctx.classificationRules;
   const specialCodes = new Set(getDataClasses().filter((d) => d.isSpecialCategory).map((d) => d.code));
 
   const inferCtx: InferContext = {
@@ -252,8 +281,8 @@ async function processRun(
         id: attr.assetId,
         name: asset?.name ?? "",
         assetType: asset?.assetType ?? null,
-        businessDomain: asset?.businessDomain ?? null,
-        subjectArea: asset?.subjectArea ?? null,
+        businessDomain: joinFacet(asset?.businessDomain),
+        subjectArea: joinFacet(asset?.subjectArea),
       },
       siblingColumnNames: siblings,
     };

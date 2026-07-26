@@ -27,7 +27,7 @@ interface EvidenceAttribute {
 export interface EvidencePayload {
   detection: EvidenceDetection;
   attribute?: EvidenceAttribute;
-  asset?: { name: string; businessDomain: string | null } | null;
+  asset?: { name: string; businessDomain: string[] | null } | null;
 }
 
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
@@ -59,7 +59,7 @@ export function EvidencePanel({ payload }: { payload: EvidencePayload }) {
           <Field label={lang === "ar" ? "الوصف بالعربية" : "Description (AR)"} value={attribute?.descriptionAr} />
           <Field label={lang === "ar" ? "نوع البيانات" : "Data type"} value={attribute?.dataType} />
           <Field label={lang === "ar" ? "الأصل" : "Asset"} value={asset?.name} />
-          <Field label={lang === "ar" ? "المجال" : "Domain"} value={asset?.businessDomain} />
+          <Field label={lang === "ar" ? "المجال" : "Domain"} value={(asset?.businessDomain ?? []).join(", ")} />
         </dl>
       </section>
 

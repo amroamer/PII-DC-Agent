@@ -5,10 +5,11 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useLanguage } from "@/hooks/useLanguage";
 import { useToast } from "@/hooks/use-toast";
 import type { Selection } from "@/hooks/useSelection";
-import type { CatalogScreen } from "@shared/lib/filter-defs";
+import { FILTERS_BY_SCREEN, type CatalogScreen, type FilterState } from "@shared/lib/filter-defs";
 import { CRITERION_CODES } from "@shared/lib/criteria";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Stepper } from "./Stepper";
+import { FilterPanel } from "./FilterPanel";
 import { Btn } from "./Btn";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -30,8 +31,8 @@ interface Framework {
   definition: {
     effective?: string;
     criteria?: Array<{ code: string; nameEn: string; description: string; evaluationMode: string }>;
-    principles?: string[];
     levels?: Array<{ code: string; labelEn: string; rank: number }>;
+    rules?: Array<{ id: string; level: string; note?: string; criterion?: string; verdict?: string; isSpecialCategory?: boolean }>;
     rollup?: string;
   };
 }
@@ -60,18 +61,32 @@ interface Preview {
   assetRollups: Array<{ assetId: number; currentLevel: string; newLevel: string; driver: string }>;
 }
 
+/** Plain-language strictness presets → the underlying confidence knobs. */
+const STRICTNESS: Record<"balanced" | "strict" | "lenient", { confidenceThreshold: number; confidenceFloor: number }> = {
+  balanced: { confidenceThreshold: 0.6, confidenceFloor: 0.3 },
+  strict: { confidenceThreshold: 0.8, confidenceFloor: 0.4 },
+  lenient: { confidenceThreshold: 0.5, confidenceFloor: 0.2 },
+};
+
+// Only the handful of filters that make sense for scoping a run (tables first),
+// not the whole catalog filter set.
+const SCOPE_FILTER_KEYS = new Set(["assetId", "businessDomain", "department", "dataType", "verdict", "columnDataClassification"]);
+const SCOPE_FILTERS = FILTERS_BY_SCREEN.attributes.filter((d) => SCOPE_FILTER_KEYS.has(d.key));
+
 export function EngineWizard({
   engineType,
   screen,
   selection,
   selectedCount,
   onClose,
+  initialScope,
 }: {
   engineType: "pii" | "classification";
   screen: CatalogScreen;
   selection: Selection;
   selectedCount: number;
   onClose: () => void;
+  initialScope?: "selected" | "all" | "remaining";
 }) {
   const { lang } = useLanguage();
   const { toast } = useToast();
@@ -93,11 +108,53 @@ export function EngineWizard({
     skipApproved: true,
     runNote: "",
   });
+  const [strictness, setStrictness] = useState<"balanced" | "strict" | "lenient" | "custom">("balanced");
+  const applyStrictness = (s: "balanced" | "strict" | "lenient") => {
+    setStrictness(s);
+    setParams((p) => ({ ...p, ...STRICTNESS[s] }));
+  };
 
   const framework = useQuery<Framework>({ queryKey: [`/api/frameworks/${engineType}`] });
 
+  // --- scope selection -------------------------------------------------------
+  const remainingFilter: FilterState =
+    engineType === "pii" ? { verdict: ["not_analysed"] } : { columnDataClassification: ["UNCLASSIFIED"] };
+  const hasInitialSelection =
+    selection.mode === "include"
+      ? selection.ids.length > 0
+      : selection.mode === "all-matching"
+        ? Object.keys(selection.filters ?? {}).length > 0
+        : false;
+  const [scopeMode, setScopeMode] = useState<"selected" | "all" | "remaining" | "filtered">(
+    initialScope ?? (hasInitialSelection ? "selected" : "all"),
+  );
+  const [scopeFilters, setScopeFilters] = useState<FilterState>({});
+
+  const effectiveSelection: Selection =
+    scopeMode === "selected"
+      ? selection
+      : scopeMode === "all"
+        ? { mode: "all-matching", filters: {}, excluded: [] }
+        : scopeMode === "remaining"
+          ? { mode: "all-matching", filters: remainingFilter, excluded: [] }
+          : { mode: "all-matching", filters: scopeFilters, excluded: [] };
+
+  // Live count for the chosen scope (selected uses the count passed from the catalog).
+  const countFilters: FilterState | null =
+    scopeMode === "selected" ? null : scopeMode === "all" ? {} : scopeMode === "remaining" ? remainingFilter : scopeFilters;
+  const countUrl =
+    countFilters !== null
+      ? `/api/catalog/attributes?filters=${encodeURIComponent(JSON.stringify(countFilters))}&page=1&pageSize=1`
+      : null;
+  const countQuery = useQuery<{ total: number }>({ queryKey: [countUrl], enabled: countUrl !== null });
+  const scopeCount = scopeMode === "selected" ? selectedCount : countQuery.data?.total ?? 0;
+
+  const aiQuery = useQuery<{ maxBatchSize: number }>({ queryKey: ["/api/settings/ai"] });
+  const maxBatch = aiQuery.data?.maxBatchSize ?? 5000;
+  const overLimit = scopeCount > maxBatch;
+
   const runMutation = useMutation({
-    mutationFn: () => apiRequest<{ id: number }>("POST", "/api/engine-runs", { engineType, screen, selection, params }),
+    mutationFn: () => apiRequest<{ id: number }>("POST", "/api/engine-runs", { engineType, screen, selection: effectiveSelection, params }),
     onSuccess: (run) => {
       setRunId(run.id);
       setUnlocked(1);
@@ -184,18 +241,18 @@ export function EngineWizard({
           <div className="flex-1 overflow-y-auto p-4">
             {step === 0 && (
               <div className="space-y-4">
-                {/* Panel A: framework (read-only) */}
-                <section className="rounded-md border p-3">
-                  <div className="mb-2 flex items-center justify-between">
-                    <h3 className="text-sm font-semibold">{lang === "ar" ? "الإطار (للقراءة فقط)" : "Framework (read-only)"}</h3>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-muted-foreground">
-                        Framework: {framework.data?.version ?? "…"}
-                        {framework.data?.definition.effective ? ` · effective ${framework.data.definition.effective}` : ""}
-                      </span>
-                      <a href="/pdtc/settings" className="text-xs text-primary underline">{lang === "ar" ? "الإعدادات" : "Settings"}</a>
-                    </div>
-                  </div>
+                {/* Panel A: framework (read-only, collapsed by default) */}
+                <details className="rounded-md border">
+                  <summary className="flex cursor-pointer items-center gap-2 p-3 text-sm">
+                    <span className="font-semibold">{lang === "ar" ? "الإطار" : "Framework"}</span>
+                    <span className="text-muted-foreground">
+                      {framework.data?.version ?? "…"}
+                      {engineType === "pii" && framework.data?.definition.criteria ? ` · ${framework.data.definition.criteria.length} ${lang === "ar" ? "معايير" : "criteria"}` : ""}
+                      {framework.data?.definition.effective ? ` · effective ${framework.data.definition.effective}` : ""}
+                    </span>
+                    <a href="/pdtc/settings" className="ms-auto text-xs text-primary underline" onClick={(e) => e.stopPropagation()}>{lang === "ar" ? "الإعدادات" : "Settings"}</a>
+                  </summary>
+                  <div className="border-t p-3">
                   {engineType === "pii" ? (
                     <>
                       <div className="overflow-x-auto">
@@ -208,77 +265,170 @@ export function EngineWizard({
                           </tbody>
                         </table>
                       </div>
-                      {framework.data?.definition.principles && (
-                        <details className="mt-2 text-xs">
-                          <summary className="cursor-pointer text-muted-foreground">{lang === "ar" ? "مبادئ المعالجة السبعة" : "Seven handling principles"}</summary>
-                          <ol className="ms-4 mt-1 list-decimal space-y-0.5">
-                            {framework.data.definition.principles.map((p, i) => <li key={i}>{p}</li>)}
-                          </ol>
-                        </details>
-                      )}
                     </>
                   ) : (
                     <div className="space-y-2">
                       <div className="flex flex-wrap gap-2">
                         {framework.data?.definition.levels?.map((l) => <Badge key={l.code} variant="outline">{l.rank}. {l.labelEn}</Badge>)}
                       </div>
+                      {framework.data?.definition.rules && framework.data.definition.rules.length > 0 && (
+                        <details className="text-xs">
+                          <summary className="cursor-pointer text-muted-foreground">{lang === "ar" ? "قواعد التصنيف" : "Classification rules"} ({framework.data.definition.rules.length})</summary>
+                          <ul className="ms-4 mt-1 space-y-0.5">
+                            {framework.data.definition.rules.map((r) => (
+                              <li key={r.id}>
+                                <span className="text-muted-foreground">
+                                  {r.isSpecialCategory ? "special-category" : [r.criterion, r.verdict].filter(Boolean).join(" · ") || "any"}
+                                </span>
+                                {" → "}<span className="font-medium">{r.level}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
                       {framework.data?.definition.rollup && (
                         <p className="text-xs text-muted-foreground">{lang === "ar" ? "قاعدة التجميع" : "Rollup precedence"}: {framework.data.definition.rollup}</p>
                       )}
                     </div>
                   )}
-                </section>
+                  </div>
+                </details>
 
                 {/* Panel B: scope */}
-                <Alert tone="info" title={`${lang === "ar" ? "النطاق" : "Scope"}: ${selectedCount} ${lang === "ar" ? "سمة" : "attributes"}`}>
-                  <label className="mt-1 flex items-center gap-2">
+                <section className="space-y-2 rounded-md border border-primary/20 bg-primary/5 p-3">
+                  <div className="flex items-center gap-2 text-sm">
+                    <Info className="h-4 w-4 text-muted-foreground" />
+                    <span className="font-semibold">{lang === "ar" ? "النطاق" : "Scope"}</span>
+                    <span className="ms-auto tabular-nums text-muted-foreground">{scopeCount.toLocaleString()} {lang === "ar" ? "سمة" : "attributes"}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {hasInitialSelection && (
+                      <Button type="button" size="sm" variant={scopeMode === "selected" ? "default" : "outline"} onClick={() => setScopeMode("selected")}>
+                        {lang === "ar" ? "المحدد" : "Selected"} ({selectedCount.toLocaleString()})
+                      </Button>
+                    )}
+                    <Button type="button" size="sm" variant={scopeMode === "all" ? "default" : "outline"} onClick={() => setScopeMode("all")}>
+                      {lang === "ar" ? "الكل" : "All"}
+                    </Button>
+                    <Button type="button" size="sm" variant={scopeMode === "remaining" ? "default" : "outline"} onClick={() => setScopeMode("remaining")}>
+                      {engineType === "pii"
+                        ? (lang === "ar" ? "المتبقّي (لم يُحلَّل)" : "Remaining (not analysed)")
+                        : (lang === "ar" ? "المتبقّي (غير مصنّف)" : "Remaining (unclassified)")}
+                    </Button>
+                    <Button type="button" size="sm" variant={scopeMode === "filtered" ? "default" : "outline"} onClick={() => setScopeMode("filtered")}>
+                      {lang === "ar" ? "تصفية / اختيار جداول" : "Filter / pick tables"}
+                    </Button>
+                  </div>
+                  {scopeMode === "filtered" && (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <p className="text-xs text-muted-foreground">
+                          {lang === "ar"
+                            ? "اختر جدولاً واحداً أو أكثر، أو قسّم حسب المجال / النوع / الحالة."
+                            : "Pick one or more tables, or slice by domain / type / status."}
+                        </p>
+                        {Object.keys(scopeFilters).length > 0 && (
+                          <button type="button" className="ms-auto text-xs text-muted-foreground underline hover:text-foreground" onClick={() => setScopeFilters({})}>
+                            {lang === "ar" ? "مسح" : "Clear"}
+                          </button>
+                        )}
+                      </div>
+                      <FilterPanel
+                        screen="attributes"
+                        defs={SCOPE_FILTERS}
+                        filters={scopeFilters}
+                        onChange={(k, v) => setScopeFilters((f) => {
+                          const next = { ...f };
+                          if (v === undefined) delete next[k];
+                          else next[k] = v;
+                          return next;
+                        })}
+                        flat
+                      />
+                    </div>
+                  )}
+                  {overLimit && (
+                    <p className="text-xs text-destructive">
+                      {lang === "ar"
+                        ? `النطاق يتجاوز ${maxBatch.toLocaleString()} — ضيّق التحديد (الحد الأقصى لكل تشغيل؛ يُرفع من الإعدادات).`
+                        : `Scope exceeds ${maxBatch.toLocaleString()} — narrow it. Up to ${maxBatch.toLocaleString()} columns per run; raise the limit in Settings.`}
+                    </p>
+                  )}
+                  <label className="flex items-center gap-2 text-sm">
                     <Checkbox checked={params.skipApproved} onCheckedChange={(v) => setParams((p) => ({ ...p, skipApproved: v === true }))} />
                     {lang === "ar" ? "تخطي العناصر المعتمدة مسبقاً" : "Skip items already approved"}
                   </label>
-                </Alert>
+                </section>
 
-                {/* Panel C: run params */}
-                <section className="grid gap-3 sm:grid-cols-2">
-                  <Field label={lang === "ar" ? "عتبة القبول التلقائي" : "Auto-accept threshold"}>
-                    <Input type="number" step="0.05" min="0" max="1" value={params.confidenceThreshold} onChange={(e) => setParams((p) => ({ ...p, confidenceThreshold: Number(e.target.value) }))} />
-                  </Field>
-                  <Field label={lang === "ar" ? "الحد الأدنى للثقة" : "Confidence floor"}>
-                    <Input type="number" step="0.05" min="0" max="1" value={params.confidenceFloor} onChange={(e) => setParams((p) => ({ ...p, confidenceFloor: Number(e.target.value) }))} />
-                  </Field>
-                  <Field label={lang === "ar" ? "حجم الدفعة" : "Batch size"}>
-                    <Input type="number" min="1" max="50" value={params.batchSize} onChange={(e) => setParams((p) => ({ ...p, batchSize: Number(e.target.value) }))} />
-                  </Field>
-                  <Field label={lang === "ar" ? "عينات الاتساق الذاتي" : "Self-consistency samples"}>
-                    <Input type="number" min="1" max="9" value={params.selfConsistencySamples} onChange={(e) => setParams((p) => ({ ...p, selfConsistencySamples: Number(e.target.value) }))} />
-                  </Field>
-                  <Field label={lang === "ar" ? "درجة الحرارة" : "Temperature"}>
-                    <Input value="0" disabled title="Fixed at 0 for determinism (governance requirement)." />
-                  </Field>
-                  <div className="flex items-end gap-4">
-                    <label className="flex items-center gap-2 text-sm"><Checkbox checked={params.includeArabic} onCheckedChange={(v) => setParams((p) => ({ ...p, includeArabic: v === true }))} /> {lang === "ar" ? "مبرر عربي" : "Arabic rationale"}</label>
-                    <label className="flex items-center gap-2 text-sm"><Checkbox checked={params.useCache} onCheckedChange={(v) => setParams((p) => ({ ...p, useCache: v === true, forceFresh: v === true ? p.forceFresh : false }))} /> {lang === "ar" ? "استخدام المخزّن" : "Use cache"}</label>
-                    <label className="flex items-center gap-2 text-sm"><Checkbox checked={params.forceFresh} disabled={!params.useCache} onCheckedChange={(v) => setParams((p) => ({ ...p, forceFresh: v === true }))} /> {lang === "ar" ? "تحديث إجباري" : "Force fresh"}</label>
-                  </div>
-                  {engineType === "pii" && (
-                    <div className="sm:col-span-2">
-                      <p className="mb-1 text-sm font-medium">{lang === "ar" ? "المعايير المراد تقييمها" : "Criteria to evaluate"}</p>
-                      <div className="flex flex-wrap gap-2">
-                        {CRITERION_CODES.map((c) => (
-                          <label key={c} className="flex items-center gap-1.5 text-xs">
-                            <Checkbox checked={params.criteria.includes(c)} onCheckedChange={(v) => setParams((p) => ({ ...p, criteria: v === true ? [...p.criteria, c] : p.criteria.filter((x) => x !== c) }))} />
-                            {c}
-                          </label>
-                        ))}
-                      </div>
-                      {params.criteria.length < CRITERION_CODES.length && (
-                        <p className="mt-1 text-xs text-warning">{lang === "ar" ? "تشغيل جزئي لا يُعد دليلاً على التغطية الكاملة." : "A partial run cannot be used as evidence of full policy coverage."}</p>
-                      )}
+                {/* Panel C: essentials — strictness + run note */}
+                <section className="space-y-3">
+                  <div>
+                    <p className="mb-1.5 text-sm font-medium">{lang === "ar" ? "مستوى الصرامة" : "Strictness"}</p>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="button" size="sm" variant={strictness === "balanced" ? "default" : "outline"} onClick={() => applyStrictness("balanced")}>
+                        {lang === "ar" ? "متوازن (موصى به)" : "Balanced (recommended)"}
+                      </Button>
+                      <Button type="button" size="sm" variant={strictness === "strict" ? "default" : "outline"} onClick={() => applyStrictness("strict")}>
+                        {lang === "ar" ? "صارم" : "Strict"}
+                      </Button>
+                      <Button type="button" size="sm" variant={strictness === "lenient" ? "default" : "outline"} onClick={() => applyStrictness("lenient")}>
+                        {lang === "ar" ? "متساهل" : "Lenient"}
+                      </Button>
                     </div>
-                  )}
-                  <Field label={lang === "ar" ? "ملاحظة التشغيل" : "Run note"} className="sm:col-span-2">
-                    <Input value={params.runNote} onChange={(e) => setParams((p) => ({ ...p, runNote: e.target.value }))} />
+                    <p className="mt-1.5 text-xs text-muted-foreground">
+                      {strictness === "custom"
+                        ? (lang === "ar" ? "عتبات مخصّصة (من الخيارات المتقدمة)." : "Custom thresholds — set in Advanced.")
+                        : (lang === "ar"
+                            ? `قبول تلقائي عند ثقة ≥ ${Math.round(params.confidenceThreshold * 100)}%؛ الباقي يُرسَل إلى المراجعة.`
+                            : `Auto-accept at ≥ ${Math.round(params.confidenceThreshold * 100)}% confidence; everything below goes to review.`)}
+                    </p>
+                  </div>
+                  <Field label={lang === "ar" ? "ملاحظة التشغيل" : "Run note"}>
+                    <Input value={params.runNote} onChange={(e) => setParams((p) => ({ ...p, runNote: e.target.value }))} placeholder={lang === "ar" ? "لتمييز هذا التشغيل لاحقاً" : "Label this run so you can find it later"} />
                   </Field>
                 </section>
+
+                {/* Advanced options (collapsed) */}
+                <details className="rounded-md border">
+                  <summary className="cursor-pointer p-3 text-sm text-muted-foreground">{lang === "ar" ? "خيارات متقدمة" : "Advanced options"}</summary>
+                  <div className="space-y-3 border-t p-3">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <Field label={lang === "ar" ? "عتبة القبول التلقائي" : "Auto-accept threshold"}>
+                        <Input type="number" step="0.05" min="0" max="1" value={params.confidenceThreshold} onChange={(e) => { setParams((p) => ({ ...p, confidenceThreshold: Number(e.target.value) })); setStrictness("custom"); }} />
+                      </Field>
+                      <Field label={lang === "ar" ? "الحد الأدنى للثقة" : "Confidence floor"}>
+                        <Input type="number" step="0.05" min="0" max="1" value={params.confidenceFloor} onChange={(e) => { setParams((p) => ({ ...p, confidenceFloor: Number(e.target.value) })); setStrictness("custom"); }} />
+                      </Field>
+                      <Field label={lang === "ar" ? "حجم الدفعة" : "Batch size"}>
+                        <Input type="number" min="1" max="50" value={params.batchSize} onChange={(e) => setParams((p) => ({ ...p, batchSize: Number(e.target.value) }))} />
+                      </Field>
+                      <Field label={lang === "ar" ? "عينات الاتساق الذاتي" : "Self-consistency samples"}>
+                        <Input type="number" min="1" max="9" value={params.selfConsistencySamples} onChange={(e) => setParams((p) => ({ ...p, selfConsistencySamples: Number(e.target.value) }))} />
+                      </Field>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-4">
+                      <label className="flex items-center gap-2 text-sm"><Checkbox checked={params.includeArabic} onCheckedChange={(v) => setParams((p) => ({ ...p, includeArabic: v === true }))} /> {lang === "ar" ? "مبرر عربي" : "Arabic rationale"}</label>
+                      <label className="flex items-center gap-2 text-sm"><Checkbox checked={params.useCache} onCheckedChange={(v) => setParams((p) => ({ ...p, useCache: v === true, forceFresh: v === true ? p.forceFresh : false }))} /> {lang === "ar" ? "استخدام المخزّن" : "Use cache"}</label>
+                      <label className="flex items-center gap-2 text-sm"><Checkbox checked={params.forceFresh} disabled={!params.useCache} onCheckedChange={(v) => setParams((p) => ({ ...p, forceFresh: v === true }))} /> {lang === "ar" ? "تحديث إجباري" : "Force fresh"}</label>
+                    </div>
+                    {engineType === "pii" && (
+                      <div>
+                        <p className="mb-1 text-sm font-medium">{lang === "ar" ? "المعايير المراد تقييمها" : "Criteria to evaluate"}</p>
+                        <div className="flex flex-wrap gap-2">
+                          {CRITERION_CODES.map((c) => (
+                            <label key={c} className="flex items-center gap-1.5 text-xs">
+                              <Checkbox checked={params.criteria.includes(c)} onCheckedChange={(v) => setParams((p) => ({ ...p, criteria: v === true ? [...p.criteria, c] : p.criteria.filter((x) => x !== c) }))} />
+                              {c}
+                            </label>
+                          ))}
+                        </div>
+                        {params.criteria.length < CRITERION_CODES.length && (
+                          <p className="mt-1 text-xs text-warning">{lang === "ar" ? "تشغيل جزئي لا يُعد دليلاً على التغطية الكاملة." : "A partial run cannot be used as evidence of full policy coverage."}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </details>
               </div>
             )}
 
@@ -358,7 +508,7 @@ export function EngineWizard({
             <Button variant="ghost" onClick={() => (runId ? discard.mutate() : onClose())}>{runId ? (lang === "ar" ? "تجاهل" : "Discard run") : (lang === "ar" ? "إلغاء" : "Cancel")}</Button>
             <div className="flex gap-2">
               {step > 0 && <Button variant="outline" onClick={() => setStep(step - 1)}>{lang === "ar" ? "رجوع" : "Back"}</Button>}
-              {step === 0 && <Btn loading={runMutation.isPending} onClick={() => runMutation.mutate()}>{lang === "ar" ? "تشغيل" : "Run"}</Btn>}
+              {step === 0 && <Btn loading={runMutation.isPending} disabled={overLimit || scopeCount === 0} onClick={() => runMutation.mutate()}>{lang === "ar" ? "تشغيل" : "Run"}</Btn>}
               {step === 1 && <Button disabled={running} onClick={() => { setUnlocked(2); setStep(2); }}>{lang === "ar" ? "التالي" : "Next"}</Button>}
               {step === 2 && <Btn variant="destructive" loading={approve.isPending} disabled={justification.trim().length < 10} onClick={() => approve.mutate()}>{lang === "ar" ? "اعتماد والتزام" : "Approve & commit"}</Btn>}
             </div>

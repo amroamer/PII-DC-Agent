@@ -4,8 +4,6 @@ import {
   BadgeCheck,
   Columns3,
   Database,
-  FileSpreadsheet,
-  FileUp,
   FolderUp,
   LayoutDashboard,
   ListChecks,
@@ -28,13 +26,11 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { href: "/coverage", labelKey: "nav.coverage", icon: <LayoutDashboard className="h-4 w-4" /> },
-  { href: "/ingest", labelKey: "nav.ingest", icon: <FileSpreadsheet className="h-4 w-4" /> },
   { href: "/assets", labelKey: "nav.assets", icon: <Database className="h-4 w-4" /> },
   { href: "/attributes", labelKey: "nav.attributes", icon: <Columns3 className="h-4 w-4" /> },
   { href: "/detection", labelKey: "nav.detection", icon: <Radar className="h-4 w-4" /> },
   { href: "/classification", labelKey: "nav.classification", icon: <BadgeCheck className="h-4 w-4" /> },
   { href: "/review", labelKey: "nav.review", icon: <ListChecks className="h-4 w-4" /> },
-  { href: "/import", labelKey: "nav.import", icon: <FileUp className="h-4 w-4" /> },
   { href: "/settings", labelKey: "nav.settings", icon: <Settings className="h-4 w-4" /> },
   { href: "/import-test", labelKey: "nav.importTest", icon: <FolderUp className="h-4 w-4" /> },
 ];

@@ -70,9 +70,9 @@ const VERDICT_OPTIONS = [
 ];
 
 const CLASSIFICATION_OPTIONS = [
-  opt("PUBLIC", "Public", "عام"),
-  opt("INTERNAL", "Internal", "داخلي"),
+  opt("OPEN", "Open", "مفتوح"),
   opt("CONFIDENTIAL", "Confidential", "سري"),
+  opt("SENSITIVE", "Sensitive", "حساس"),
   opt("SECRET", "Secret", "سري للغاية"),
   opt("UNCLASSIFIED", "Unclassified", "غير مصنّف"),
 ];
@@ -180,7 +180,7 @@ export const ATTRIBUTE_FILTERS: FilterDefinition[] = [
   { key: "columnDataClassification", labelEn: "Column classification", labelAr: "تصنيف العمود", group: "classification", control: "multiselect", optionsSource: "static", staticOptions: CLASSIFICATION_OPTIONS },
   { key: "classificationSource", labelEn: "Classification source", labelAr: "مصدر التصنيف", group: "classification", control: "enum", optionsSource: "static", staticOptions: CLASSIFICATION_SOURCE_OPTIONS },
 
-  { key: "verdict", labelEn: "PII verdict", labelAr: "قرار البيانات الشخصية", group: "pii", control: "enum", optionsSource: "static", staticOptions: VERDICT_OPTIONS },
+  { key: "verdict", labelEn: "PII verdict", labelAr: "قرار البيانات الشخصية", group: "pii", control: "multiselect", optionsSource: "static", staticOptions: VERDICT_OPTIONS },
   { key: "criterion", labelEn: "Matched criterion", labelAr: "المعيار المطابق", group: "pii", control: "multiselect", optionsSource: "static", staticOptions: CRITERION_OPTIONS },
   { key: "criteriaCount", labelEn: "Number of criteria matched", labelAr: "عدد المعايير المطابقة", group: "pii", control: "numeric-range", min: 0, max: 5 },
   { key: "specialCategory", labelEn: "Special category", labelAr: "فئة خاصة", group: "pii", control: "boolean" },

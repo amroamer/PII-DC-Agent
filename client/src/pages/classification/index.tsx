@@ -27,6 +27,12 @@ import { DataTable, type Column } from "@/components/pdtc/DataTable";
 import { ClassificationBadge } from "@/components/pdtc/ClassificationBadge";
 import { Modal } from "@/components/pdtc/Modal";
 import { Alert } from "@/components/pdtc/Alert";
+import { EngineWizard } from "@/components/pdtc/EngineWizard";
+import { AttributeDetailDrawer } from "@/components/pdtc/AttributeDetailDrawer";
+import { AssetDetailDrawer } from "@/components/pdtc/AssetDetailDrawer";
+import type { Selection } from "@/hooks/useSelection";
+
+const ALL_ATTRS: Selection = { mode: "all-matching", filters: {}, excluded: [] };
 
 interface AttrClass {
   attributeId: number;
@@ -57,21 +63,17 @@ export default function ClassificationPage() {
   const { t, lang } = useLanguage();
   const { toast } = useToast();
   const [target, setTarget] = useState<OverrideTarget | null>(null);
-  const [level, setLevel] = useState<ClassificationCode>("INTERNAL");
+  const [level, setLevel] = useState<ClassificationCode>("CONFIDENTIAL");
   const [rationale, setRationale] = useState("");
 
   const attrsQuery = useQuery<AttrClass[]>({ queryKey: ["/api/classification/attributes"] });
   const assetsQuery = useQuery<AssetClass[]>({ queryKey: ["/api/classification/assets"] });
 
-  const runMutation = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/classification/runs", {}),
-    onSuccess: (res: any) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/classification/attributes"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/classification/assets"] });
-      toast({ title: "Classification complete", description: `${res.attributesClassified} attributes · ${res.assetsClassified} assets` });
-    },
-    onError: (err: Error) => toast({ variant: "destructive", title: "Run failed", description: err.message }),
-  });
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardScope, setWizardScope] = useState<"all" | "remaining">("all");
+  const [attrDetailId, setAttrDetailId] = useState<number | null>(null);
+  const [assetDetailId, setAssetDetailId] = useState<number | null>(null);
+  const totalQuery = useQuery<{ total: number }>({ queryKey: ["/api/catalog/attributes?filters=%7B%7D&page=1&pageSize=1"] });
 
   const overrideMutation = useMutation({
     mutationFn: (payload: { scope: ClassificationScope; targetId: number; levelCode: ClassificationCode; rationale: string }) =>
@@ -117,7 +119,7 @@ export default function ClassificationPage() {
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => beginOverride({ scope: "attribute", targetId: r.attributeId, label: r.columnName, current: r.levelCode })}
+          onClick={(e) => { e.stopPropagation(); beginOverride({ scope: "attribute", targetId: r.attributeId, label: r.columnName, current: r.levelCode }); }}
         >
           <PencilLine className="h-4 w-4" /> {t("action.override")}
         </Button>
@@ -146,7 +148,7 @@ export default function ClassificationPage() {
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => beginOverride({ scope: "asset", targetId: r.assetId, label: r.assetName, current: r.levelCode })}
+          onClick={(e) => { e.stopPropagation(); beginOverride({ scope: "asset", targetId: r.assetId, label: r.assetName, current: r.levelCode }); }}
         >
           <PencilLine className="h-4 w-4" /> {t("action.override")}
         </Button>
@@ -165,9 +167,14 @@ export default function ClassificationPage() {
               : "Derive confidentiality labels from PII verdicts and roll them up to asset level."}
           </p>
         </div>
-        <Btn icon={<Play className="h-4 w-4" />} loading={runMutation.isPending} onClick={() => runMutation.mutate()}>
-          Run classification
-        </Btn>
+        <div className="flex gap-2">
+          <Btn variant="outline" onClick={() => { setWizardScope("remaining"); setWizardOpen(true); }}>
+            {lang === "ar" ? "تشغيل المتبقّي" : "Run the remaining"}
+          </Btn>
+          <Btn icon={<Play className="h-4 w-4" />} onClick={() => { setWizardScope("all"); setWizardOpen(true); }}>
+            {lang === "ar" ? "تشغيل التصنيف" : "Run classification"}
+          </Btn>
+        </div>
       </header>
 
       <Tabs defaultValue="attributes">
@@ -177,12 +184,12 @@ export default function ClassificationPage() {
         </TabsList>
         <TabsContent value="attributes">
           <Card><CardContent className="pt-6">
-            <DataTable columns={attrColumns} rows={attrsQuery.data ?? []} getRowKey={(r) => r.attributeId} loading={attrsQuery.isLoading} emptyTitle="No attribute classifications" emptyDescription="Run the classification engine after a detection run." />
+            <DataTable columns={attrColumns} rows={attrsQuery.data ?? []} getRowKey={(r) => r.attributeId} loading={attrsQuery.isLoading} onRowClick={(r) => setAttrDetailId(r.attributeId)} emptyTitle="No attribute classifications" emptyDescription="Run the classification engine after a detection run." />
           </CardContent></Card>
         </TabsContent>
         <TabsContent value="assets">
           <Card><CardContent className="pt-6">
-            <DataTable columns={assetColumns} rows={assetsQuery.data ?? []} getRowKey={(r) => r.assetId} loading={assetsQuery.isLoading} emptyTitle="No asset rollups" />
+            <DataTable columns={assetColumns} rows={assetsQuery.data ?? []} getRowKey={(r) => r.assetId} loading={assetsQuery.isLoading} onRowClick={(r) => setAssetDetailId(r.assetId)} emptyTitle="No asset rollups" />
           </CardContent></Card>
         </TabsContent>
       </Tabs>
@@ -224,6 +231,20 @@ export default function ClassificationPage() {
           {rationale.trim().length === 0 && <Alert tone="warning" title="A justification is required." />}
         </div>
       </Modal>
+
+      {wizardOpen && (
+        <EngineWizard
+          engineType="classification"
+          screen="attributes"
+          selection={ALL_ATTRS}
+          selectedCount={totalQuery.data?.total ?? 0}
+          initialScope={wizardScope}
+          onClose={() => setWizardOpen(false)}
+        />
+      )}
+
+      <AttributeDetailDrawer id={attrDetailId} defaultTab="classification" onClose={() => setAttrDetailId(null)} />
+      <AssetDetailDrawer id={assetDetailId} defaultTab="classification" onClose={() => setAssetDetailId(null)} onOpenAttribute={setAttrDetailId} />
     </div>
   );
 }

@@ -24,6 +24,7 @@ import { VerdictPill } from "@/components/pdtc/Pill";
 import { CriterionBadge } from "@/components/pdtc/CriterionBadge";
 import { ConfidenceBar } from "@/components/pdtc/ConfidenceBar";
 import { Modal } from "@/components/pdtc/Modal";
+import { AttributeDetailDrawer } from "@/components/pdtc/AttributeDetailDrawer";
 
 type Decision = "accepted" | "rejected" | "overridden";
 
@@ -46,6 +47,7 @@ export default function ReviewPage() {
   const [active, setActive] = useState<{ item: ReviewItemView; decision: Decision } | null>(null);
   const [rationale, setRationale] = useState("");
   const [overrideLevel, setOverrideLevel] = useState<ClassificationCode>("CONFIDENTIAL");
+  const [detailAttrId, setDetailAttrId] = useState<number | null>(null);
 
   const itemsQuery = useQuery<ReviewItemView[]>({
     queryKey: [`/api/review/items?status=${status}`],
@@ -95,7 +97,7 @@ export default function ReviewPage() {
       header: t("field.status"),
       render: (r) =>
         r.status === "pending" ? (
-          <div className="flex gap-1">
+          <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
             <Button size="sm" variant="outline" onClick={() => { setActive({ item: r, decision: "accepted" }); setRationale(""); }}>{t("action.accept")}</Button>
             <Button size="sm" variant="outline" onClick={() => { setActive({ item: r, decision: "rejected" }); setRationale(""); }}>{t("action.reject")}</Button>
             <Button size="sm" variant="outline" onClick={() => { setActive({ item: r, decision: "overridden" }); setRationale(""); }}>{t("action.override")}</Button>
@@ -131,10 +133,13 @@ export default function ReviewPage() {
           rows={itemsQuery.data ?? []}
           getRowKey={(r) => r.id}
           loading={itemsQuery.isLoading}
+          onRowClick={(r) => setDetailAttrId(r.targetId)}
           emptyTitle="Queue is empty"
           emptyDescription="Run the detection engine to populate the review queue."
         />
       </CardContent></Card>
+
+      <AttributeDetailDrawer id={detailAttrId} defaultTab="review" onClose={() => setDetailAttrId(null)} />
 
       <Modal
         open={active !== null}
