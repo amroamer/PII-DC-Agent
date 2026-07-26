@@ -118,8 +118,12 @@ export function setupAuth(app: Express): void {
   });
 
   app.get("/api/auth/me", (req, res) => {
+    // Session probe on app load: return 200 with a null user when not signed in
+    // rather than 401, so the browser console isn't spammed with a red error on
+    // every visit to the login page. Protected API routes still use requireAuth
+    // (which returns 401) — this endpoint only reports who, if anyone, is logged in.
     if (!req.isAuthenticated?.()) {
-      res.status(401).json({ user: null });
+      res.json({ user: null });
       return;
     }
     res.json({ user: publicUser(req.user as User) });
