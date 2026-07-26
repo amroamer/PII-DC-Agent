@@ -1,0 +1,29 @@
+name: Deploy to Azure VM
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Load environment file
+        run: cp /home/azureuser/pdtc-config/.env .env
+
+      - name: Stop existing containers
+        run: docker compose -p pdtc down || true
+
+      - name: Build and start
+        run: docker compose -p pdtc up -d --build
+
+      - name: Clean up old images
+        run: docker image prune -f
+
+      - name: Show status
+        run: docker compose -p pdtc ps
