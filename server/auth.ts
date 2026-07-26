@@ -5,12 +5,13 @@
  */
 import type { Express } from "express";
 import session from "express-session";
+import connectPgSimple from "connect-pg-simple";
 import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 import { scrypt, randomBytes, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 import { eq } from "drizzle-orm";
-import { db } from "./db";
+import { db, pool } from "./db";
 import { users, loginSchema, type User } from "@shared/models/schema";
 import { asyncHandler, HttpError } from "./http";
 
@@ -47,8 +48,16 @@ function publicUser(user: User) {
 
 export function setupAuth(app: Express): void {
   app.set("trust proxy", 1);
+
+  // Persist sessions in Postgres (not the default in-memory store). The in-memory
+  // store loses every session when the process restarts, so each redeploy would log
+  // all users out. The pg store survives restarts/redeploys and multiple instances.
+  // createTableIfMissing auto-provisions the "session" table on first startup.
+  const PgSession = connectPgSimple(session);
+
   app.use(
     session({
+      store: new PgSession({ pool, createTableIfMissing: true }),
       secret: process.env.SESSION_SECRET ?? "dev-only-change-me",
       resave: false,
       saveUninitialized: false,
