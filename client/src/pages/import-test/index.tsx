@@ -55,9 +55,9 @@ export default function ImportTestPage() {
   const files = filesQuery.data ?? [];
 
   const uploadMutation = useMutation({
-    mutationFn: async (fileList: FileList) => {
+    mutationFn: async (files: File[]) => {
       const form = new FormData();
-      Array.from(fileList).forEach((f) => form.append("files", f));
+      files.forEach((f) => form.append("files", f));
       const res = await fetch("/api/files", { method: "POST", body: form, credentials: "include" });
       if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.message ?? "Upload failed");
       return (await res.json()) as { uploaded: number };
@@ -135,8 +135,15 @@ export default function ImportTestPage() {
             multiple
             className="hidden"
             onChange={(e) => {
-              if (e.target.files && e.target.files.length) uploadMutation.mutate(e.target.files);
+              // Snapshot the picked files into a stable array *before* clearing the
+              // input. e.target.files is a LIVE FileList tied to the input, and
+              // `e.target.value = ""` empties it synchronously. react-query runs the
+              // mutationFn asynchronously, so reading the FileList inside the mutation
+              // would find zero files (→ 400 "No files uploaded"). Array.from() here
+              // captures the File objects while they still exist.
+              const picked = e.target.files ? Array.from(e.target.files) : [];
               e.target.value = "";
+              if (picked.length) uploadMutation.mutate(picked);
             }}
           />
           <Btn icon={<FileUp className="h-4 w-4" />} loading={uploadMutation.isPending} onClick={() => fileRef.current?.click()}>
