@@ -143,6 +143,16 @@ export function defaultInfer(): InferDeps["infer"] {
   };
 }
 
+/** System/operational columns that are not personal on their own (audit timestamps, flags, versions, keys). */
+function isOperationalColumn(name: string): boolean {
+  const n = name.toLowerCase();
+  return (
+    /(date_created|created_date|date_modified|modified_date|creation_date|last_modified|last_updated|update_date|updated_date|date_updated|modified_at|created_at)/.test(n) ||
+    /(_flag$|_flag_|^flag_|is_deletable|isdeletable|_enabled$|enabled_flag|active_flag)/.test(n) ||
+    /(row_version|_version_no|version_no|_seq$|_seqno$|sequence_no|_rowid$|_count$)/.test(n)
+  );
+}
+
 function specialCategoryHit(dataClassCode: string | null): boolean {
   if (!dataClassCode) return false;
   const dc = getDataClasses().find((c) => c.code === dataClassCode);
@@ -227,10 +237,18 @@ export async function inferPiiForAttribute(
     }
   }
 
+  // A configured LLM that was attempted but produced no result (rate limit / timeout / unreachable)
+  // must NOT silently fall through to a deterministic not_pii — surface it as uncertain for review.
+  const llmFailed = !deps.infer && isAiConfigured() && !cached && llm === null;
+
   let verdict: DetectionVerdict = llm?.verdict ?? merged.verdict;
-  const confidence = llm?.overallConfidence ?? merged.confidence;
+  let confidence = llm?.overallConfidence ?? merged.confidence;
   // §6.1 Panel C: a verdict below the confidence floor is forced to uncertain.
   if (verdict === "pii" && confidence < ctx.confidenceFloor) verdict = "uncertain";
+  if (llmFailed) {
+    verdict = "uncertain";
+    confidence = 0;
+  }
   const suggestedClassCode = llm?.suggestedDataClass ?? merged.dataClassCode;
   const ar = (s: string) => (ctx.includeArabic ? s : "");
 
@@ -263,15 +281,46 @@ export async function inferPiiForAttribute(
     };
   });
 
+  // #6/#7 guardrail: a "pii" verdict resting ONLY on Contextual Risk is an association-with-the-asset
+  // call, not intrinsic personal content. For plain operational/system columns (audit timestamps,
+  // flags, versions, sequence keys) that is a false positive → not_pii; otherwise it survives but as a
+  // low-confidence, review-pending call (never auto-accepted on association alone).
+  const appliedCodes = assessments.filter((a) => a.applies).map((a) => a.criterionCode);
+  const onlyContextual = appliedCodes.length > 0 && appliedCodes.every((c) => c === "CONTEXTUAL");
+  if (verdict === "pii" && onlyContextual) {
+    if (isOperationalColumn(input.attribute.columnName)) {
+      verdict = "not_pii";
+      const ctxA = assessments.find((a) => a.criterionCode === "CONTEXTUAL");
+      if (ctxA) {
+        ctxA.applies = false;
+        ctxA.rationaleEn = `Operational/system metadata (${input.attribute.columnName}) — not personal on its own, despite the asset containing identifiers.`;
+        ctxA.rationaleAr = ar("بيانات تشغيلية/نظامية — ليست شخصية بحد ذاتها رغم احتواء الأصل على معرّفات.");
+      }
+    } else {
+      confidence = Math.min(confidence, 0.55);
+    }
+  }
+
   return {
     verdict,
     suggestedClassCode,
     confidence,
-    rationaleEn: divergence
-      ? `Self-consistency divergence across ${ctx.selfConsistencySamples} samples (${divergence}); held as uncertain.`
-      : llm?.rationaleEn ?? merged.rationaleEn,
-    rationaleAr: ar(llm?.rationaleAr ?? merged.rationaleAr),
-    sourceLayers: divergence ? [...merged.contributingLayers, "self_consistency"] : merged.contributingLayers,
+    rationaleEn: llmFailed
+      ? "AI inference was unavailable for this attribute (rate limit / timeout / unreachable); held as uncertain for steward review — not auto-classified."
+      : divergence
+        ? `Self-consistency divergence across ${ctx.selfConsistencySamples} samples (${divergence}); held as uncertain.`
+        : llm?.rationaleEn ?? merged.rationaleEn,
+    rationaleAr: ar(
+      llmFailed
+        ? "تعذّر إجراء الاستدلال بالذكاء الاصطناعي لهذه السمة (حد المعدل / مهلة)؛ مُعلّقة للمراجعة."
+        : llm?.rationaleAr ?? merged.rationaleAr,
+    ),
+    sourceLayers: [
+      ...merged.contributingLayers,
+      ...(llm ? ["llm"] : []),
+      ...(llmFailed ? ["llm_unavailable"] : []),
+      ...(divergence ? ["self_consistency"] : []),
+    ],
     conflict: merged.conflict,
     assessments,
     inputHash,

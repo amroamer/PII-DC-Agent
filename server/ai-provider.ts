@@ -104,16 +104,22 @@ export async function aiComplete(params: AiCompleteParams): Promise<string> {
   if (params.system) messages.push({ role: "system", content: params.system });
   messages.push({ role: "user", content: params.prompt });
 
-  const body: Record<string, unknown> = {
-    model,
-    messages,
-    temperature: params.temperature ?? 0,
-    top_p: params.topP ?? 1,
-    n: 1,
-    max_tokens: params.maxTokens ?? 800,
-  };
-  // A fixed seed makes greedy decoding reproducible on endpoints that honour it.
-  if (params.seed !== undefined) body.seed = params.seed;
+  // GPT-5 / o-series reasoning models reject temperature≠1, top_p, seed and max_tokens;
+  // they take max_completion_tokens and spend hidden tokens on reasoning. Branch so both
+  // OpenAI reasoning models and local OpenAI-compatible endpoints (Ollama) work.
+  const isReasoningModel = /^(gpt-5|o[0-9])/i.test(model);
+  const body: Record<string, unknown> = { model, messages };
+  if (isReasoningModel) {
+    body.max_completion_tokens = params.maxTokens ?? 3000;
+    body.reasoning_effort = "low";
+  } else {
+    body.temperature = params.temperature ?? 0;
+    body.top_p = params.topP ?? 1;
+    body.n = 1;
+    body.max_tokens = params.maxTokens ?? 800;
+    // A fixed seed makes greedy decoding reproducible on endpoints that honour it.
+    if (params.seed !== undefined) body.seed = params.seed;
+  }
 
   if (params.schema) {
     body.response_format = {
@@ -124,26 +130,45 @@ export async function aiComplete(params: AiCompleteParams): Promise<string> {
     body.response_format = { type: "json_object" };
   }
 
-  let res: Response;
-  try {
-    res = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-      },
-      body: JSON.stringify(body),
-    });
-  } catch (err) {
-    throw new AiUnavailableError(
-      `AI endpoint unreachable at ${baseUrl}: ${(err as Error).message}`,
-    );
+  // Retry transient failures (network, 429 rate-limit, 5xx) with backoff. A hard
+  // quota/billing 429 is NOT retried. A call that ultimately fails throws
+  // AiUnavailableError, which the caller turns into an "uncertain / needs-review"
+  // verdict — never a silent not_pii.
+  const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+  const maxAttempts = 3;
+  let res: Response | null = null;
+  let lastError = "";
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      res = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      res = null;
+      lastError = `unreachable at ${baseUrl}: ${(err as Error).message}`;
+    }
+    if (res && res.ok) break;
+    const status = res?.status ?? 0;
+    const detail = res ? await res.text().catch(() => "") : "";
+    // Hard quota/billing limit — retrying will not help; fail fast.
+    if (status === 429 && /insufficient_quota|exceeded your current quota|billing/i.test(detail)) {
+      throw new AiUnavailableError(`AI endpoint quota exceeded (429): ${detail.slice(0, 200)}`);
+    }
+    const retryable = res === null || RETRYABLE.has(status);
+    if (!retryable || attempt === maxAttempts) {
+      throw new AiUnavailableError(
+        res ? `AI endpoint returned ${status}: ${detail.slice(0, 300)}` : `AI endpoint ${lastError}`,
+      );
+    }
+    res = null;
+    await new Promise((r) => setTimeout(r, Math.min(4000, 500 * 2 ** (attempt - 1))));
   }
-
-  if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new AiUnavailableError(`AI endpoint returned ${res.status}: ${detail.slice(0, 300)}`);
-  }
+  if (!res) throw new AiUnavailableError(`AI endpoint ${lastError || "unreachable"}`);
 
   const data = (await res.json()) as {
     choices?: Array<{ message?: { content?: unknown } }>;

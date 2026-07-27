@@ -64,7 +64,14 @@ function composeSystemPrompt(
   const active = criteria.filter((c) => activeCodes.includes(c.code));
   if (active.length === 0) return base;
   const block = active.map((c) => `- ${c.code} (${c.nameEn}): ${c.description}`).join("\n");
-  return `${base}\n\nCriteria reference (apply these exact definitions):\n${block}`;
+  const rules = [
+    "Classification rules (apply strictly):",
+    "1. Judge THIS column only. A column is personal only if the column itself stores or reveals personal data. Do NOT mark a column personal merely because it sits in an asset/table that also contains identifiers — identifiers in OTHER columns are not evidence about this column.",
+    "2. CONTEXTUAL (Contextual Risk) applies ONLY when THIS column is itself a quasi-identifier that helps single out or narrow down a person in combination (e.g. date of birth, nationality, precise location, a plate/ID tied to an owner). It does NOT apply to generic operational or system metadata — record created/modified/updated timestamps, boolean flags (is_*, *_flag, enabled/active), status/type codes, row versions, sequence or surrogate keys, counts — even inside a table full of personal data. Those are not_pii.",
+    "3. The column NAME is the primary evidence; the description is secondary and may be wrong. If the name and description clearly disagree (e.g. name 'EXCHANGE_RATE' but description 'vehicle number'), treat the metadata as unreliable: prefer verdict 'uncertain' with confidence <= 0.5 and note the conflict.",
+    "4. Confidence must reflect INTRINSIC personal content. If a column would only be 'personal' by association/context (no personal data in the column itself), return not_pii. Reserve confidence >= 0.8 for columns whose own content is clearly personal.",
+  ].join("\n");
+  return `${base}\n\nCriteria reference (apply these exact definitions):\n${block}\n\n${rules}`;
 }
 
 // In-memory cancellation signal. processRun checks it between batches.
@@ -95,7 +102,7 @@ async function prepareRun(input: CreateRunInput, actorId: number | null): Promis
     getSetting<number>("confidence_review_threshold") ??
     0.6;
   const modelId = process.env.OPENAI_MODEL ?? "deterministic-local";
-  const promptVersion = `pii_detection_classify@1`;
+  const promptVersion = `pii_detection_classify@2`;
   const seed = getSetting<number>("inference_seed") ?? 42;
   const framework = await getActiveFrameworkVersion(input.engineType);
 
@@ -162,6 +169,24 @@ async function prepareRun(input: CreateRunInput, actorId: number | null): Promis
   };
   return { run, targetIds, ctx };
 }
+
+/** Run `fn` over `items` with at most `limit` concurrent executions (worker pool). */
+async function mapConcurrent<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const idx = next++;
+      await fn(items[idx]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length) }, worker));
+}
+
+/** Per-run LLM concurrency. The engine was fully sequential; the LLM layer dominates wall-clock. */
+const RUN_CONCURRENCY = Number(process.env.RUN_CONCURRENCY) || 8;
+
+/** Headline criterion when several apply — most-specific/strongest first. No CONTEXTUAL fallback. */
+const CRITERION_PRECEDENCE: CriterionCode[] = ["DIRECT_ID", "SPECIAL_CATEGORY", "INDIRECT_ID", "REGULATORY", "CONTEXTUAL"];
 
 async function executeRun(prepared: PreparedRun, deps: InferDeps): Promise<EngineRun> {
   const { run, targetIds, ctx } = prepared;
@@ -272,7 +297,7 @@ async function processRun(
   for (const batch of batches) {
    // Cancellation leaves the partial results staged; the catalog stays untouched.
    if (cancelledRuns.has(run.id)) break;
-   for (const attr of batch) {
+   await mapConcurrent(batch, RUN_CONCURRENCY, async (attr) => {
     const asset = assetMap.get(attr.assetId);
     const siblings = (siblingsByAsset.get(attr.assetId) ?? []).filter((n) => n !== attr.columnName);
     const detInput: DetectionInput = {
@@ -293,8 +318,8 @@ async function processRun(
 
       const isSpecial = specialCodes.has(inference.suggestedClassCode ?? "");
       const appliedCriterion =
-        inference.assessments.find((a) => a.applies)?.criterionCode ??
-        (inference.verdict === "pii" ? "CONTEXTUAL" : null);
+        CRITERION_PRECEDENCE.find((code) => inference.assessments.some((a) => a.applies && a.criterionCode === code)) ??
+        null;
 
       let suggestedLevelCode: ClassificationCode | null = null;
       if (ctx.engineType === "classification") {
@@ -356,7 +381,7 @@ async function processRun(
       } catch {
         errorCount++;
       }
-    }
+    });
 
     // Persist progress once per batch (batch boundaries are reproducible).
     await db
