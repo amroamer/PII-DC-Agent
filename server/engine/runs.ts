@@ -32,6 +32,8 @@ import {
   getActivePiiCriteria,
 } from "../frameworks/store";
 import { inferPiiForAttribute, type InferContext, type InferDeps } from "./infer";
+import { AdaptiveRunner } from "./adaptive-runner";
+import { RateLimitError } from "../ai-provider";
 import { batchify, sortCanonical } from "../pii-engine/canonicalize";
 import type { DetectionInput } from "../pii-engine/types";
 
@@ -171,20 +173,13 @@ async function prepareRun(input: CreateRunInput, actorId: number | null): Promis
   return { run, targetIds, ctx };
 }
 
-/** Run `fn` over `items` with at most `limit` concurrent executions (worker pool). */
-async function mapConcurrent<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const idx = next++;
-      await fn(items[idx]);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length) }, worker));
-}
+/** Ceiling for the adaptive concurrency controller (AdaptiveRunner ramps up to this, backing
+ *  off on 429s). The engine was fully sequential; the LLM layer dominates wall-clock. */
+const RUN_CONCURRENCY = Number(process.env.RUN_CONCURRENCY) || 12;
 
-/** Per-run LLM concurrency. The engine was fully sequential; the LLM layer dominates wall-clock. */
-const RUN_CONCURRENCY = Number(process.env.RUN_CONCURRENCY) || 8;
+/** A rate-limit is the only failure the controller reacts to; everything else propagates. */
+const rateLimitProbe = (err: unknown): number | null | false =>
+  err instanceof RateLimitError ? err.retryAfterMs : false;
 
 /** Headline criterion when several apply — most-specific/strongest first. No CONTEXTUAL fallback. */
 const CRITERION_PRECEDENCE: CriterionCode[] = ["DIRECT_ID", "SPECIAL_CATEGORY", "INDIRECT_ID", "REGULATORY", "CONTEXTUAL"];
@@ -294,11 +289,13 @@ async function processRun(
   let processed = 0;
   let cachedCount = 0;
   let errorCount = 0;
+  // Adaptive concurrency: ramps up to RUN_CONCURRENCY, halves + cools down on any 429.
+  const runner = new AdaptiveRunner({ max: RUN_CONCURRENCY });
 
   for (const batch of batches) {
    // Cancellation leaves the partial results staged; the catalog stays untouched.
    if (cancelledRuns.has(run.id)) break;
-   await mapConcurrent(batch, RUN_CONCURRENCY, async (attr) => {
+   await Promise.all(batch.map(async (attr) => {
     const asset = assetMap.get(attr.assetId);
     const siblings = (siblingsByAsset.get(attr.assetId) ?? []).filter((n) => n !== attr.columnName);
     const detInput: DetectionInput = {
@@ -314,7 +311,7 @@ async function processRun(
     };
 
     try {
-      const inference = await inferPiiForAttribute(detInput, inferCtx, deps);
+      const inference = await runner.run(() => inferPiiForAttribute(detInput, inferCtx, deps), rateLimitProbe);
       if (inference.cached) cachedCount++;
 
       const isSpecial = specialCodes.has(inference.suggestedClassCode ?? "");
@@ -382,13 +379,20 @@ async function processRun(
       } catch {
         errorCount++;
       }
-    });
+    }));
 
     // Persist progress once per batch (batch boundaries are reproducible).
     await db
       .update(engineRuns)
       .set({ processedItems: processed, cachedItems: cachedCount, errorItems: errorCount })
       .where(eq(engineRuns.id, run.id));
+  }
+  if (runner.backoffs > 0) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `Engine run ${run.id}: adaptive concurrency settled at ${runner.limit}/${RUN_CONCURRENCY} ` +
+        `(peak ${runner.peak}, ${runner.backoffs} rate-limit backoffs).`,
+    );
   }
 }
 

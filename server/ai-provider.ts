@@ -14,6 +14,14 @@ export class AiUnavailableError extends Error {
   }
 }
 
+/** Transient rate-limit (HTTP 429, not a hard quota). Signals the run controller to back off. */
+export class RateLimitError extends Error {
+  constructor(public readonly retryAfterMs: number | null, message: string) {
+    super(message);
+    this.name = "RateLimitError";
+  }
+}
+
 export class MetadataBoundaryError extends Error {
   constructor(message: string) {
     super(message);
@@ -134,7 +142,9 @@ export async function aiComplete(params: AiCompleteParams): Promise<string> {
   // quota/billing 429 is NOT retried. A call that ultimately fails throws
   // AiUnavailableError, which the caller turns into an "uncertain / needs-review"
   // verdict — never a silent not_pii.
-  const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+  // 5xx/network are retried here; a transient 429 is raised as RateLimitError so the run's
+  // adaptive controller can slow the whole run down (retrying just this call won't help).
+  const RETRYABLE = new Set([500, 502, 503, 504]);
   const maxAttempts = 3;
   let res: Response | null = null;
   let lastError = "";
@@ -155,9 +165,15 @@ export async function aiComplete(params: AiCompleteParams): Promise<string> {
     if (res && res.ok) break;
     const status = res?.status ?? 0;
     const detail = res ? await res.text().catch(() => "") : "";
-    // Hard quota/billing limit — retrying will not help; fail fast.
-    if (status === 429 && /insufficient_quota|exceeded your current quota|billing/i.test(detail)) {
-      throw new AiUnavailableError(`AI endpoint quota exceeded (429): ${detail.slice(0, 200)}`);
+    if (status === 429) {
+      // Hard quota/billing limit — retrying will not help; fail fast.
+      if (/insufficient_quota|exceeded your current quota|billing/i.test(detail)) {
+        throw new AiUnavailableError(`AI endpoint quota exceeded (429): ${detail.slice(0, 200)}`);
+      }
+      // Transient rate limit — surface to the adaptive controller (respect Retry-After).
+      const ra = res?.headers.get("retry-after");
+      const retryAfterMs = ra && Number(ra) > 0 ? Number(ra) * 1000 : null;
+      throw new RateLimitError(retryAfterMs, `AI endpoint rate-limited (429)`);
     }
     const retryable = res === null || RETRYABLE.has(status);
     if (!retryable || attempt === maxAttempts) {
