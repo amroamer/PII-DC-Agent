@@ -244,18 +244,15 @@ export async function inferPiiForAttribute(
   // must NOT silently fall through to a deterministic not_pii — surface it as uncertain for review.
   const llmFailed = !deps.infer && isAiConfigured() && !cached && llm === null;
 
-  // #3: the model flagged the column name and its description as describing different things.
-  // The metadata is untrustworthy, so don't confidently tag it — hold for a steward to fix.
+  // #3: the model flagged that the column name and description describe different things. It has
+  // already classified from the NAME (per the prompt) and downgraded confidence itself; here we only
+  // SURFACE the data-quality issue (source layer + rationale) so a steward fixes the description.
   const metadataConflict = llm?.metadataConflict === true;
 
   let verdict: DetectionVerdict = llm?.verdict ?? merged.verdict;
   let confidence = llm?.overallConfidence ?? merged.confidence;
   // §6.1 Panel C: a verdict below the confidence floor is forced to uncertain.
   if (verdict === "pii" && confidence < ctx.confidenceFloor) verdict = "uncertain";
-  if (metadataConflict && verdict === "pii") {
-    verdict = "uncertain";
-    confidence = Math.min(confidence, 0.4);
-  }
   if (llmFailed) {
     verdict = "uncertain";
     confidence = 0;
