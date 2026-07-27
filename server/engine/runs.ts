@@ -22,7 +22,7 @@ import type { CriterionCode, CriterionDef } from "@shared/lib/criteria";
 import { CRITERION_CODES, CRITERION_PRECEDENCE } from "@shared/lib/criteria";
 import type { ClassificationCode } from "@shared/lib/classification";
 import { getDataClasses, getPrompt, getSetting } from "../reference-cache";
-import { classifyByRules, reconcileLevel, type ClassificationRule } from "../classification-engine/attribute-rules";
+import { classifyByRules, reconcileLevel, reconciliationNote, type ClassificationRule } from "../classification-engine/attribute-rules";
 import { inferClassificationLevel, type ClassInferContext } from "../classification-engine/classify-infer";
 import type { CatalogScreen } from "@shared/lib/filter-defs";
 import { joinFacet } from "@shared/lib/facets";
@@ -498,8 +498,17 @@ async function processRun(
         if (classResult.level) {
           classConfidence = classResult.confidence;
           itemConfidence = classResult.confidence;
-          itemRationaleEn = classResult.rationaleEn || `Classified ${suggestedLevelCode}.`;
-          itemRationaleAr = classResult.rationaleAr;
+          // When the governance floor raised the level above the model's own call, lead the
+          // rationale with WHY — otherwise the stored "Level: Confidential…" text contradicts a
+          // Sensitive/Secret badge and confuses the steward.
+          const recon = reconciliationNote(
+            classResult.level,
+            suggestedLevelCode,
+            attr.columnDataClassification ?? null,
+            classInferCtx.includeArabic,
+          );
+          itemRationaleEn = recon.en + (classResult.rationaleEn || `Classified ${suggestedLevelCode}.`);
+          itemRationaleAr = recon.ar + classResult.rationaleAr;
           itemSourceLayers = [
             "classification_llm",
             ...(suggestedLevelCode !== classResult.level ? ["rule_floor"] : []),

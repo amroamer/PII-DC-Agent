@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ChevronRight, Info, TriangleAlert } from "lucide-react";
+import { ArrowUp, ChevronRight, Info, TriangleAlert } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useLanguage } from "@/hooks/useLanguage";
 import { useToast } from "@/hooks/use-toast";
@@ -24,7 +24,21 @@ import { ConfidenceBar } from "./ConfidenceBar";
 import { CriterionBadge } from "./CriterionBadge";
 import { ClassificationBadge } from "./ClassificationBadge";
 import { isCriterionCode } from "@shared/lib/criteria";
+import { isClassificationCode } from "@shared/lib/classification";
 import { cn } from "@/lib/utils";
+
+/** Human-readable names for the raw sourceLayers tokens shown on run items. */
+const LAYER_LABELS: Record<string, { en: string; ar: string }> = {
+  classification_llm: { en: "AI model", ar: "نموذج الذكاء" },
+  rule_floor: { en: "Policy floor", ar: "الحد الأدنى للسياسة" },
+  llm: { en: "AI model", ar: "نموذج الذكاء" },
+  ikc_class: { en: "IKC class library", ar: "مكتبة فئات IKC" },
+  adc_class: { en: "ADC class library", ar: "مكتبة فئات ADC" },
+  metadata_conflict: { en: "Metadata conflict", ar: "تعارض بيانات وصفية" },
+  llm_unavailable: { en: "AI unavailable", ar: "الذكاء غير متاح" },
+  self_consistency: { en: "Self-consistency", ar: "الاتساق الذاتي" },
+};
+const layerLabel = (l: string, lang: string) => (lang === "ar" ? LAYER_LABELS[l]?.ar : LAYER_LABELS[l]?.en) ?? l;
 
 interface Framework {
   version: string;
@@ -51,6 +65,7 @@ interface RunItem {
   sourceLayers: string[] | null;
   stewardDecision: string;
   priority?: number;
+  currentValue?: { columnDataClassification?: string | null } | null;
   assessments: Array<{ criterionCode: string; applies: boolean; rationaleEn: string; rationaleAr: string; confidence: number }>;
 }
 interface Preview {
@@ -566,6 +581,10 @@ function ResultRow({ item, engineType, lang, onDecision }: { item: RunItem; engi
   const [open, setOpen] = useState(false);
   const layers = item.sourceLayers ?? [];
   const prio = priorityMeta(item.priority, lang);
+  // Classification only: the governance floor lifted the level above the model's own call.
+  const floorRaised = engineType === "classification" && layers.includes("rule_floor");
+  const existingLevel = item.currentValue?.columnDataClassification ?? null;
+  const floorHint = lang === "ar" ? "رُفع فوق تقييم النموذج بواسطة الحد الأدنى للحوكمة" : "Raised above the model's assessment by the governance floor";
   return (
     <>
       <tr className="border-b">
@@ -577,12 +596,21 @@ function ResultRow({ item, engineType, lang, onDecision }: { item: RunItem; engi
           </button>
           <span className="ms-4 block text-xs text-muted-foreground">{item.assetName}</span>
         </td>
-        <td className="p-2">{engineType === "pii" ? (item.verdict ? <VerdictPill verdict={item.verdict as any} /> : "—") : <ClassificationBadge code={item.suggestedLevelCode as any} />}</td>
+        <td className="p-2">
+          {engineType === "pii" ? (
+            item.verdict ? <VerdictPill verdict={item.verdict as any} /> : "—"
+          ) : (
+            <span className="inline-flex items-center gap-1">
+              <ClassificationBadge code={item.suggestedLevelCode as any} />
+              {floorRaised && <ArrowUp className="h-3.5 w-3.5 text-info" aria-label={floorHint}><title>{floorHint}</title></ArrowUp>}
+            </span>
+          )}
+        </td>
         <td className="p-2 text-xs">{item.suggestedClassCode ?? "—"}</td>
         <td className="p-2"><ConfidenceBar value={item.confidence} /></td>
         <td className="p-2">
-          <div className="flex items-center gap-1">
-            {layers.map((l) => <span key={l} className="rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">{l}</span>)}
+          <div className="flex flex-wrap items-center gap-1">
+            {layers.map((l) => <span key={l} className="rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">{layerLabel(l, lang)}</span>)}
             {item.conflict && <TriangleAlert className="h-3.5 w-3.5 text-warning" />}
           </div>
         </td>
@@ -598,20 +626,48 @@ function ResultRow({ item, engineType, lang, onDecision }: { item: RunItem; engi
       {open && (
         <tr className="bg-muted/30">
           <td colSpan={6} className="space-y-2 p-3">
-            <table className="w-full text-xs">
-              <thead className="text-muted-foreground"><tr><th className="p-1 text-start">Criterion</th><th className="p-1 text-start">Applies</th><th className="p-1 text-start">Reasoning (EN)</th><th className="p-1 text-start">Reasoning (AR)</th><th className="p-1 text-start">Conf.</th></tr></thead>
-              <tbody>
-                {item.assessments.map((a) => (
-                  <tr key={a.criterionCode} className="border-t">
-                    <td className="p-1">{isCriterionCode(a.criterionCode) ? <CriterionBadge code={a.criterionCode} /> : a.criterionCode}</td>
-                    <td className="p-1">{a.applies ? <Badge variant="success">Yes</Badge> : <Badge variant="outline">No</Badge>}</td>
-                    <td className="p-1">{a.rationaleEn}</td>
-                    <td className="p-1 text-end" dir="rtl">{a.rationaleAr}</td>
-                    <td className="p-1 tabular-nums">{Math.round(a.confidence * 100)}%</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            {engineType === "pii" ? (
+              <table className="w-full text-xs">
+                <thead className="text-muted-foreground"><tr><th className="p-1 text-start">Criterion</th><th className="p-1 text-start">Applies</th><th className="p-1 text-start">Reasoning (EN)</th><th className="p-1 text-start">Reasoning (AR)</th><th className="p-1 text-start">Conf.</th></tr></thead>
+                <tbody>
+                  {item.assessments.map((a) => (
+                    <tr key={a.criterionCode} className="border-t">
+                      <td className="p-1">{isCriterionCode(a.criterionCode) ? <CriterionBadge code={a.criterionCode} /> : a.criterionCode}</td>
+                      <td className="p-1">{a.applies ? <Badge variant="success">Yes</Badge> : <Badge variant="outline">No</Badge>}</td>
+                      <td className="p-1">{a.rationaleEn}</td>
+                      <td className="p-1 text-end" dir="rtl">{a.rationaleAr}</td>
+                      <td className="p-1 tabular-nums">{Math.round(a.confidence * 100)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              // Classification: show HOW the level was derived — existing catalog level, the
+              // contributing layers, and (when the floor lifted it) an explicit note.
+              <div className="space-y-1.5 text-xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium">{lang === "ar" ? "اشتقاق المستوى" : "Level derivation"}:</span>
+                  {isClassificationCode(existingLevel ?? "") && (
+                    <span className="inline-flex items-center gap-1">
+                      <span className="text-muted-foreground">{lang === "ar" ? "الحالي" : "Current"}</span>
+                      <ClassificationBadge code={existingLevel as any} />
+                      <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                    </span>
+                  )}
+                  <span className="inline-flex items-center gap-1">
+                    <span className="text-muted-foreground">{lang === "ar" ? "المقترح" : "Suggested"}</span>
+                    <ClassificationBadge code={item.suggestedLevelCode as any} />
+                  </span>
+                  {layers.map((l) => <span key={l} className="rounded bg-secondary px-1.5 py-0.5 text-[10px]">{layerLabel(l, lang)}</span>)}
+                </div>
+                {floorRaised && (
+                  <p className="flex items-start gap-1 text-info">
+                    <ArrowUp className="mt-0.5 h-3 w-3 shrink-0" />
+                    <span>{floorHint}.</span>
+                  </p>
+                )}
+              </div>
+            )}
             {(item.rationaleEn || item.rationaleAr) && (
               <p className="text-xs">
                 <span className="font-medium">{lang === "ar" ? "المبرر العام" : "Overall rationale"}: </span>

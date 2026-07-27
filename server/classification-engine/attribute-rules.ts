@@ -7,7 +7,7 @@
  */
 import type { CriterionCode } from "@shared/lib/criteria";
 import type { ClassificationCode } from "@shared/lib/classification";
-import { moreRestrictive } from "@shared/lib/classification";
+import { levelLabel, levelRank, moreRestrictive } from "@shared/lib/classification";
 import type { DetectionVerdict } from "@shared/models/schema";
 
 export interface ClassificationRule {
@@ -132,4 +132,37 @@ export function reconcileLevel(
   ruleFloor: ClassificationCode,
 ): ClassificationCode {
   return llmLevel ? moreRestrictive(llmLevel, ruleFloor) : ruleFloor;
+}
+
+/**
+ * A one-sentence, bilingual note explaining WHY the final level differs from the
+ * model's own assessment — i.e. the governance floor raised it. Returned empty when
+ * the model and final levels agree (nothing to explain). Distinguishes the two floor
+ * sources a steward cares about: the column's existing catalog classification (the
+ * engine never downgrades below it) vs. the special-category / personal-data policy.
+ * This text is stored on the run item, so it also lands in the approved
+ * classification record and the Excel export.
+ */
+export function reconciliationNote(
+  modelLevel: ClassificationCode | null,
+  finalLevel: ClassificationCode,
+  existingLevel: ClassificationCode | null,
+  includeArabic: boolean,
+): { en: string; ar: string } {
+  if (!modelLevel || modelLevel === finalLevel) return { en: "", ar: "" };
+  const heldByExisting = existingLevel !== null && levelRank(existingLevel) >= levelRank(finalLevel);
+  const en =
+    `Final level ${levelLabel(finalLevel)}: the AI model assessed ${levelLabel(modelLevel)}, but the engine raised it — ` +
+    (heldByExisting
+      ? `held at the column's existing catalog classification (${levelLabel(existingLevel!)}); the engine never downgrades below it.`
+      : `the special-category / personal-data policy floor applies.`) +
+    " ";
+  const ar = includeArabic
+    ? `المستوى النهائي ${levelLabel(finalLevel, "ar")}: قيّم النموذج ${levelLabel(modelLevel, "ar")}، لكن المحرك رفعه — ` +
+      (heldByExisting
+        ? `مثبّت عند التصنيف الحالي للعمود (${levelLabel(existingLevel!, "ar")})؛ ولا يخفّضه المحرك دون ذلك.`
+        : `بسبب الحد الأدنى لسياسة الفئة الخاصة/البيانات الشخصية.`) +
+      " "
+    : "";
+  return { en, ar };
 }

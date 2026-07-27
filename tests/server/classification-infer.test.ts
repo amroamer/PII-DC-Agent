@@ -6,7 +6,7 @@ import {
   type ClassInferDeps,
   type PiiContext,
 } from "../../server/classification-engine/classify-infer";
-import { reconcileLevel } from "../../server/classification-engine/attribute-rules";
+import { reconcileLevel, reconciliationNote } from "../../server/classification-engine/attribute-rules";
 import type { DetectionInput } from "../../server/pii-engine/types";
 
 function makeInput(i: number, asset = "Travellers"): DetectionInput {
@@ -57,6 +57,29 @@ describe("reconcileLevel — escalate-only", () => {
   it("falls back to the floor when the LLM is unavailable (null)", () => {
     expect(reconcileLevel(null, "CONFIDENTIAL")).toBe("CONFIDENTIAL");
     expect(reconcileLevel(null, "SENSITIVE")).toBe("SENSITIVE");
+  });
+});
+
+describe("reconciliationNote", () => {
+  it("is empty when the model and final levels agree", () => {
+    expect(reconciliationNote("CONFIDENTIAL", "CONFIDENTIAL", null, true)).toEqual({ en: "", ar: "" });
+    expect(reconciliationNote(null, "CONFIDENTIAL", null, true).en).toBe("");
+  });
+
+  it("attributes a raise to the existing catalog classification when it is the binding floor", () => {
+    const n = reconciliationNote("CONFIDENTIAL", "SENSITIVE", "SENSITIVE", true);
+    expect(n.en).toContain("existing catalog classification");
+    expect(n.en).toContain("Sensitive");
+    expect(n.ar).not.toBe("");
+  });
+
+  it("attributes a raise to the policy floor when there is no higher existing level", () => {
+    const n = reconciliationNote("CONFIDENTIAL", "SENSITIVE", null, true);
+    expect(n.en).toContain("policy floor");
+  });
+
+  it("omits Arabic when includeArabic is false", () => {
+    expect(reconciliationNote("CONFIDENTIAL", "SECRET", null, false).ar).toBe("");
   });
 });
 
