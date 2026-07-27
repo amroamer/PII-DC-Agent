@@ -1,0 +1,62 @@
+{
+  "description": "Hand-labeled confidentiality gold set for the classification eval harness (script/eval-classification.ts). `level` is the expected DGE level under the ESCALATE-ONLY policy: CONFIDENTIAL is the default floor for all data, raised to SENSITIVE for special-category data and to SECRET for law-enforcement/offender/seizure context. There are no OPEN targets (down-classification is out of engine scope). Columns whose `note` mentions escalation exercise the semantic layer; the rest test that ordinary personal and operational data is NOT over-classified.",
+  "columns": [
+    { "table": "ACL_CAR_REG", "column": "ACR_CAR_OWNER_NAME", "level": "SENSITIVE", "note": "existing IKC classification is SENSITIVE — engine floors at it (never downgrades)" },
+    { "table": "ACL_CAR_REG", "column": "ACR_CAR_DRIVER_NAME_OPEN", "level": "SENSITIVE", "note": "IKC floor = SENSITIVE" },
+    { "table": "ACL_CAR_REG", "column": "ACR_CAR_DRIVER_ID_NO_OPEN", "level": "SENSITIVE", "note": "IKC floor = SENSITIVE" },
+    { "table": "ACL_CAR_REG", "column": "ACR_CAR_PLATE_NO", "level": "SENSITIVE", "note": "IKC floor = SENSITIVE" },
+    { "table": "ACL_CAR_REG", "column": "ACR_CAR_CHASSIS_NO", "level": "SENSITIVE", "note": "IKC floor = SENSITIVE" },
+    { "table": "ACL_CAR_REG", "column": "ACR_CAR_CREATED_DATE", "level": "CONFIDENTIAL", "note": "operational timestamp — must stay Confidential, not escalated" },
+
+    { "table": "DELEGATIONS", "column": "D_FULL_NAME_ENG", "level": "CONFIDENTIAL" },
+    { "table": "DELEGATIONS", "column": "D_EMAIL_ADDRESS", "level": "CONFIDENTIAL" },
+    { "table": "DELEGATIONS", "column": "D_MOBILE_NO", "level": "CONFIDENTIAL" },
+    { "table": "DELEGATIONS", "column": "D_NATIONALITY", "level": "CONFIDENTIAL" },
+
+    { "table": "MF_AGENTS", "column": "AG_CONTACT_PERSON_EN", "level": "CONFIDENTIAL" },
+    { "table": "MF_AGENTS", "column": "AG_EMAIL", "level": "CONFIDENTIAL" },
+    { "table": "MF_AGENTS", "column": "AG_MOBILE_NO", "level": "CONFIDENTIAL" },
+    { "table": "MF_AGENTS", "column": "AG_ADDRESS", "level": "CONFIDENTIAL" },
+
+    { "table": "CUSTOMS_SEIZURES_OFFENDER", "column": "CSO_OFFENDER_NAME_ENG", "level": "SECRET", "note": "offender identity in an enforcement/seizure asset — escalate to Secret" },
+    { "table": "CUSTOMS_SEIZURES_OFFENDER", "column": "CSO_OFFENDER_ID_NUMBER", "level": "SECRET", "note": "offender ID in an enforcement asset — escalate to Secret" },
+    { "table": "CUSTOMS_SEIZURES_OFFENDER", "column": "CSO_OFFENDER_DOB", "level": "SECRET", "note": "offender personal detail in an enforcement asset — escalate to Secret" },
+    { "table": "CUSTOMS_SEIZURES_OFFENDER", "column": "CSO_OFFENDER_ADDRESS", "level": "SECRET", "note": "offender personal detail in an enforcement asset — escalate to Secret" },
+    { "table": "CUSTOMS_SEIZURES_OFFENDER", "column": "CSO_MOBILE_NO", "level": "SECRET", "note": "offender contact in an enforcement asset — escalate to Secret" },
+    { "table": "CUSTOMS_SEIZURES_OFFENDER", "column": "CSO_DATE_CREATED", "level": "CONFIDENTIAL", "note": "system timestamp — stays Confidential even in an enforcement asset (boundary test)" },
+    { "table": "CUSTOMS_SEIZURES_OFFENDER", "column": "CSO_DATE_MODIFIED", "level": "CONFIDENTIAL", "note": "system timestamp — stays Confidential even in an enforcement asset (boundary test)" },
+
+    { "table": "Employees", "column": "FullName", "level": "CONFIDENTIAL" },
+    { "table": "Employees", "column": "EmailAddress", "level": "CONFIDENTIAL" },
+    { "table": "Employees", "column": "PhoneNumber", "level": "CONFIDENTIAL" },
+    { "table": "Employees", "column": "DateOfBirth", "level": "CONFIDENTIAL" },
+    { "table": "Employees", "column": "NationalityId", "level": "CONFIDENTIAL" },
+    { "table": "Employees", "column": "Gender", "level": "CONFIDENTIAL" },
+    { "table": "Employees", "column": "ReligionId", "level": "SENSITIVE", "note": "religion — special category, escalate to Sensitive" },
+    { "table": "Employees", "column": "Photo", "level": "SENSITIVE", "note": "biometric facial image — special category, escalate to Sensitive" },
+    { "table": "Employees", "column": "Created", "level": "CONFIDENTIAL" },
+    { "table": "Employees", "column": "DepartmentId", "level": "CONFIDENTIAL" },
+    { "table": "Employees", "column": "JobCode", "level": "CONFIDENTIAL" },
+    { "table": "Employees", "column": "IsPolicyAccepted", "level": "CONFIDENTIAL" },
+
+    { "table": "RECEIPTION_VISITOR_MANAGEMENT", "column": "IS_VISITOR_ILLNESS_SIGN", "level": "SENSITIVE", "note": "health indicator — special category, escalate to Sensitive" },
+    { "table": "RECEIPTION_VISITOR_MANAGEMENT", "column": "IS_VISITOR_ILLNESS_SIGN_DETAILS", "level": "SENSITIVE", "note": "health detail — special category, escalate to Sensitive" },
+    { "table": "RECEIPTION_VISITOR_MANAGEMENT", "column": "LASTUPDATED_DATE", "level": "CONFIDENTIAL" },
+
+    { "table": "ACL_MF_IMPORTERS", "column": "IMP_OWNER_NAME", "level": "CONFIDENTIAL" },
+    { "table": "ACL_MF_IMPORTERS", "column": "IMP_NAT_ID", "level": "CONFIDENTIAL" },
+    { "table": "ACL_MF_IMPORTERS", "column": "IMP_UAE_ID", "level": "CONFIDENTIAL" },
+    { "table": "ACL_MF_IMPORTERS", "column": "IMP_DOB", "level": "CONFIDENTIAL" },
+    { "table": "ACL_MF_IMPORTERS", "column": "IMP_E_MAIL", "level": "CONFIDENTIAL" },
+    { "table": "ACL_MF_IMPORTERS", "column": "IMP_MOBILE_NO", "level": "CONFIDENTIAL" },
+    { "table": "ACL_MF_IMPORTERS", "column": "IMP_ADDRESS", "level": "CONFIDENTIAL" },
+    { "table": "ACL_MF_IMPORTERS", "column": "IMP_DATE_CREATED", "level": "CONFIDENTIAL" },
+    { "table": "ACL_MF_IMPORTERS", "column": "IMP_ACTIVE_FLAG", "level": "CONFIDENTIAL" },
+    { "table": "ACL_MF_IMPORTERS", "column": "IMP_CITY_CODE", "level": "CONFIDENTIAL" },
+
+    { "table": "ACCT_JV_HDRS", "column": "AJH_BILL_AMOUNT", "level": "CONFIDENTIAL" },
+    { "table": "ACCT_JV_HDRS", "column": "AJH_DATE_CREATED", "level": "CONFIDENTIAL" },
+    { "table": "ACCT_JV_HDRS", "column": "AJH_CURRENCY", "level": "CONFIDENTIAL" },
+    { "table": "ACCT_JV_HDRS", "column": "AJH_POSTED_FLAG", "level": "CONFIDENTIAL" }
+  ]
+}

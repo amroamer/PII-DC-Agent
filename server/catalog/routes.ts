@@ -3,7 +3,7 @@ import { asyncHandler, HttpError, requireAdmin, requireAuth } from "../http";
 import { savedViewSchema, selectionSchema, type User } from "@shared/models/schema";
 import type { CatalogScreen, FilterState } from "@shared/lib/filter-defs";
 import { listAssets, listAttributes, distinctOptions, resolveSelection } from "./query";
-import { getAssetKpis, getAttributeKpis } from "./kpis";
+import { getAssetKpis, getAttributeKpis, getPiiDensity } from "./kpis";
 import { wipeAllData } from "./wipe";
 import { getAssetDetail, getAttributeDetail } from "./detail";
 import {
@@ -102,6 +102,16 @@ export function registerCatalogRoutes(app: Express): void {
       const screen = screenOf(req.query.screen);
       const filters = parseFilters(req.query.filters);
       res.json(screen === "assets" ? await getAssetKpis(filters) : await getAttributeKpis(filters));
+    }),
+  );
+
+  // PII density (E): concentration of personal data by business domain + top tables.
+  app.get(
+    "/api/catalog/pii-density",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const top = req.query.top ? Math.min(50, Math.max(1, Number(req.query.top))) : 20;
+      res.json(await getPiiDensity(Number.isFinite(top) ? top : 20));
     }),
   );
 

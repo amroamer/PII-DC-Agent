@@ -118,3 +118,18 @@ export function classifyByRules(
 
   return { level, ruleId: matched.id, note: matched.note };
 }
+
+/**
+ * Reconcile the classification LLM's suggested level with the deterministic rule
+ * floor. ESCALATE-ONLY: the LLM can only RAISE above the floor (e.g. Confidential →
+ * Secret for enforcement context, or → Sensitive for special category); it can never
+ * lower a column below the governance floor (personal data / IKC / special category).
+ * When the LLM is unavailable (llmLevel === null), the floor stands unchanged, so a
+ * run stays correct offline.
+ */
+export function reconcileLevel(
+  llmLevel: ClassificationCode | null,
+  ruleFloor: ClassificationCode,
+): ClassificationCode {
+  return llmLevel ? moreRestrictive(llmLevel, ruleFloor) : ruleFloor;
+}

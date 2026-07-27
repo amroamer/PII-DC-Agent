@@ -50,6 +50,7 @@ interface RunItem {
   rationaleAr: string | null;
   sourceLayers: string[] | null;
   stewardDecision: string;
+  priority?: number;
   assessments: Array<{ criterionCode: string; applies: boolean; rationaleEn: string; rationaleAr: string; confidence: number }>;
 }
 interface Preview {
@@ -96,6 +97,7 @@ export function EngineWizard({
   const [justification, setJustification] = useState("");
   const [onlyUncertain, setOnlyUncertain] = useState(false);
   const [onlyConflicts, setOnlyConflicts] = useState(false);
+  const [sortBy, setSortBy] = useState<"default" | "priority" | "confidence">("default");
   const [params, setParams] = useState({
     confidenceThreshold: 0.6,
     confidenceFloor: 0.3,
@@ -106,6 +108,9 @@ export function EngineWizard({
     useCache: true,
     forceFresh: false,
     skipApproved: true,
+    incremental: false,
+    publishConfident: false,
+    batchInference: false,
     runNote: "",
   });
   const [strictness, setStrictness] = useState<"balanced" | "strict" | "lenient" | "custom">("balanced");
@@ -215,10 +220,12 @@ export function EngineWizard({
   });
 
   const items = itemsQuery.data ?? [];
-  const visibleItems = useMemo(
-    () => items.filter((i) => (!onlyUncertain || i.verdict === "uncertain") && (!onlyConflicts || i.conflict)),
-    [items, onlyUncertain, onlyConflicts],
-  );
+  const visibleItems = useMemo(() => {
+    const filtered = items.filter((i) => (!onlyUncertain || i.verdict === "uncertain") && (!onlyConflicts || i.conflict));
+    if (sortBy === "priority") return [...filtered].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || a.confidence - b.confidence);
+    if (sortBy === "confidence") return [...filtered].sort((a, b) => a.confidence - b.confidence);
+    return filtered;
+  }, [items, onlyUncertain, onlyConflicts, sortBy]);
 
   const steps = [
     { key: "setup", label: lang === "ar" ? "الإعداد" : "Setup" },
@@ -355,9 +362,23 @@ export function EngineWizard({
                     </p>
                   )}
                   <label className="flex items-center gap-2 text-sm">
-                    <Checkbox checked={params.skipApproved} onCheckedChange={(v) => setParams((p) => ({ ...p, skipApproved: v === true }))} />
+                    <Checkbox checked={params.skipApproved} disabled={params.incremental} onCheckedChange={(v) => setParams((p) => ({ ...p, skipApproved: v === true }))} />
                     {lang === "ar" ? "تخطي العناصر المعتمدة مسبقاً" : "Skip items already approved"}
                   </label>
+                  {engineType === "pii" && (
+                    <>
+                      <label className="flex items-center gap-2 text-sm">
+                        <Checkbox checked={params.incremental} onCheckedChange={(v) => setParams((p) => ({ ...p, incremental: v === true }))} />
+                        {lang === "ar" ? "فقط الجديد/المتغيّر منذ آخر فحص" : "Only new/changed since last scan"}
+                        <span className="text-xs text-muted-foreground">{lang === "ar" ? "(يتخطّى الأعمدة التي لم تتغيّر مدخلاتها)" : "(skips columns whose input is unchanged)"}</span>
+                      </label>
+                      <label className="flex items-center gap-2 text-sm">
+                        <Checkbox checked={params.publishConfident} onCheckedChange={(v) => setParams((p) => ({ ...p, publishConfident: v === true }))} />
+                        {lang === "ar" ? "انشر النتائج الواثقة الآن" : "Publish confident results now"}
+                        <span className="text-xs text-muted-foreground">{lang === "ar" ? "(تظهر في الكتالوج دون اعتماد)" : "(visible in the catalog without approving)"}</span>
+                      </label>
+                    </>
+                  )}
                 </section>
 
                 {/* Panel C: essentials — strictness + run note */}
@@ -410,6 +431,11 @@ export function EngineWizard({
                       <label className="flex items-center gap-2 text-sm"><Checkbox checked={params.includeArabic} onCheckedChange={(v) => setParams((p) => ({ ...p, includeArabic: v === true }))} /> {lang === "ar" ? "مبرر عربي" : "Arabic rationale"}</label>
                       <label className="flex items-center gap-2 text-sm"><Checkbox checked={params.useCache} onCheckedChange={(v) => setParams((p) => ({ ...p, useCache: v === true, forceFresh: v === true ? p.forceFresh : false }))} /> {lang === "ar" ? "استخدام المخزّن" : "Use cache"}</label>
                       <label className="flex items-center gap-2 text-sm"><Checkbox checked={params.forceFresh} disabled={!params.useCache} onCheckedChange={(v) => setParams((p) => ({ ...p, forceFresh: v === true }))} /> {lang === "ar" ? "تحديث إجباري" : "Force fresh"}</label>
+                      {engineType === "pii" && (
+                        <label className="flex items-center gap-2 text-sm" title={lang === "ar" ? "تجريبي — عدة أعمدة لكل نداء" : "Experimental — several columns per LLM call (faster/cheaper)"}>
+                          <Checkbox checked={params.batchInference} onCheckedChange={(v) => setParams((p) => ({ ...p, batchInference: v === true }))} /> {lang === "ar" ? "استدلال مجمّع (تجريبي)" : "Batch inference (experimental)"}
+                        </label>
+                      )}
                     </div>
                     {engineType === "pii" && (
                       <div>
@@ -453,6 +479,14 @@ export function EngineWizard({
                   <Button size="sm" variant="ghost" disabled={running} onClick={() => bulkDecision.mutate({ decision: "accept" })}>{lang === "ar" ? "قبول الكل" : "Accept all"}</Button>
                   <label className="ms-2 flex items-center gap-2 text-sm"><Checkbox checked={onlyUncertain} onCheckedChange={(v) => setOnlyUncertain(v === true)} /> {lang === "ar" ? "غير المؤكد" : "Uncertain"}</label>
                   <label className="flex items-center gap-2 text-sm"><Checkbox checked={onlyConflicts} onCheckedChange={(v) => setOnlyConflicts(v === true)} /> {lang === "ar" ? "المتعارض فقط" : "Conflicts only"}</label>
+                  <label className="flex items-center gap-1.5 text-sm">
+                    <span className="text-xs text-muted-foreground">{lang === "ar" ? "ترتيب" : "Sort"}</span>
+                    <select className="h-8 rounded-md border border-input bg-background px-2 text-xs" value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)}>
+                      <option value="default">{lang === "ar" ? "افتراضي" : "Default"}</option>
+                      <option value="priority">{lang === "ar" ? "الأولوية (الأخطر أولاً)" : "Priority (riskiest first)"}</option>
+                      <option value="confidence">{lang === "ar" ? "الأقل ثقة أولاً" : "Lowest confidence"}</option>
+                    </select>
+                  </label>
                   <span className="ms-auto text-sm text-muted-foreground">{items.length} {lang === "ar" ? "نتيجة" : "results"}</span>
                 </div>
                 <div className="overflow-x-auto rounded-md border">
@@ -519,9 +553,19 @@ export function EngineWizard({
   );
 }
 
+/** Review-priority chip for the riskiest items; confident items show none (less clutter). */
+function priorityMeta(priority: number | undefined, lang: string): { label: string; className: string } | null {
+  if (priority === undefined) return null;
+  if (priority >= 100) return { label: lang === "ar" ? "تعارض" : "Conflict", className: "bg-destructive/15 text-destructive" };
+  if (priority >= 80) return { label: lang === "ar" ? "غير مؤكد" : "Uncertain", className: "bg-warning/15 text-warning" };
+  if (priority >= 60) return { label: lang === "ar" ? "حدّي" : "Borderline", className: "bg-warning/10 text-warning" };
+  return null;
+}
+
 function ResultRow({ item, engineType, lang, onDecision }: { item: RunItem; engineType: string; lang: string; onDecision: (d: string) => void }) {
   const [open, setOpen] = useState(false);
   const layers = item.sourceLayers ?? [];
+  const prio = priorityMeta(item.priority, lang);
   return (
     <>
       <tr className="border-b">
@@ -529,6 +573,7 @@ function ResultRow({ item, engineType, lang, onDecision }: { item: RunItem; engi
           <button type="button" onClick={() => setOpen((o) => !o)} className="flex items-center gap-1 font-medium">
             <ChevronRight className={cn("h-3 w-3 transition", open && "rotate-90")} />
             {item.columnName}
+            {prio && <span className={cn("rounded px-1 py-0.5 text-[10px] font-medium", prio.className)}>{prio.label}</span>}
           </button>
           <span className="ms-4 block text-xs text-muted-foreground">{item.assetName}</span>
         </td>

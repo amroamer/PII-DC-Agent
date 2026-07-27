@@ -69,7 +69,8 @@ export function registerEngineRoutes(app: Express): void {
     requireAuth,
     asyncHandler(async (req, res) => {
       const decision = typeof req.query.decision === "string" ? req.query.decision : undefined;
-      res.json(await getRunItems(Number(String(req.params.id)), { decision }));
+      const sort = typeof req.query.sort === "string" ? req.query.sort : undefined;
+      res.json(await getRunItems(Number(String(req.params.id)), { decision, sort }));
     }),
   );
 

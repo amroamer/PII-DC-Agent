@@ -83,6 +83,8 @@ export interface InferContext {
   confidenceFloor: number;
   /** When false, Arabic rationales are suppressed. */
   includeArabic: boolean;
+  /** When false, disables the operational-column short-circuit (C1) so everything hits the LLM. */
+  shortCircuitOperational?: boolean;
 }
 
 export interface InferDeps {
@@ -156,23 +158,67 @@ function isOperationalColumn(name: string): boolean {
   );
 }
 
+/**
+ * Column names that HINT at special-category data (health, biometric, religion, ethnicity,
+ * …). The short-circuit must never skip these — a `DISABILITY_FLAG` matches the operational
+ * `_flag$` pattern but is health data. Deliberately liberal: a false hint only costs one LLM
+ * call (fail-safe), whereas a miss would drop a special category to not_pii (unsafe). Note
+ * "disabilit" matches "disability" (health) but not "is_disabled" (an operational state flag).
+ */
+function hintsSpecialCategory(name: string): boolean {
+  const n = name.toLowerCase();
+  return /(health|medical|illness|disease|disabilit|diagnos|patient|clinic|blood_type|biometric|fingerprint|finger_print|iris_|retina|photo|facial|signature|religio|faith|ethnic|racial|sexual|orientation|political|genetic)/.test(n);
+}
+
+/** Deterministic not_pii result for a short-circuited operational column (no LLM call). */
+function operationalNotPii(input: DetectionInput, ctx: InferContext, inputHash: string): PiiInferenceOut {
+  const ar = (s: string) => (ctx.includeArabic ? s : "");
+  const name = input.attribute.columnName;
+  const assessments: CriterionAssessmentOut[] = ctx.activeCriteria.map((code) => ({
+    criterionCode: code,
+    applies: false,
+    rationaleEn: `Operational/system column (${name}) — not personal on its own.`,
+    rationaleAr: ar("عمود تشغيلي/نظامي — ليس شخصياً بحد ذاته."),
+    confidence: 0,
+    signals: ["operational_shortcircuit"],
+  }));
+  return {
+    verdict: "not_pii",
+    suggestedClassCode: null,
+    confidence: 0.9,
+    rationaleEn: `Operational/system metadata (${name}) — audit timestamp, boolean flag, row version or sequence key. Not personal on its own; resolved deterministically without AI.`,
+    rationaleAr: ar(
+      `بيانات تشغيلية/نظامية (${name}) — طابع زمني أو علم منطقي أو إصدار أو مفتاح تسلسلي؛ ليست شخصية بحد ذاتها، وتم الحسم دون ذكاء اصطناعي.`,
+    ),
+    sourceLayers: ["operational_shortcircuit"],
+    conflict: false,
+    assessments,
+    inputHash,
+    cached: false,
+  };
+}
+
 function specialCategoryHit(dataClassCode: string | null): boolean {
   if (!dataClassCode) return false;
   const dc = getDataClasses().find((c) => c.code === dataClassCode);
   return Boolean(dc?.isSpecialCategory);
 }
 
-export async function inferPiiForAttribute(
-  input: DetectionInput,
-  ctx: InferContext,
-  deps: InferDeps,
-): Promise<PiiInferenceOut> {
+interface DeterministicBase {
+  canonical: CanonicalAttribute;
+  inputHash: string;
+  baseSignals: NonNullable<ReturnType<typeof runIkcClassLayer>>[];
+  merged: ReturnType<typeof mergeSignals>;
+  special: boolean;
+}
+
+/** Layers 1–2 + canonical payload + input hash — the deterministic base shared by single + batch. */
+function deterministicBase(input: DetectionInput, ctx: InferContext): DeterministicBase {
   const canonical = canonicalizeAttribute(input.attribute, {
     name: input.asset.name,
     businessDomain: input.asset.businessDomain,
     subjectArea: input.asset.subjectArea,
   }, input.siblingColumnNames);
-
   const inputHash = computeInputHash({
     payload: canonical,
     promptVersion: ctx.promptVersion,
@@ -182,71 +228,38 @@ export async function inferPiiForAttribute(
     schemaVersion: PII_SCHEMA_VERSION,
     systemPrompt: ctx.systemPrompt,
   });
-
-  // Deterministic base (layers 1–2).
   const s1 = runIkcClassLayer(input, { runId: "", engineVersion: ctx.engineVersion, useLlmLayer: false, confidenceReviewThreshold: ctx.threshold });
   const s2 = runAdcClassLayer(input, { runId: "", engineVersion: ctx.engineVersion, useLlmLayer: false, confidenceReviewThreshold: ctx.threshold });
   const baseSignals = [s1, s2].filter((x): x is NonNullable<typeof x> => x !== null);
   const merged = mergeSignals(baseSignals, ctx.threshold);
   const special = merged.criterion === "SPECIAL_CATEGORY" || specialCategoryHit(merged.dataClassCode);
+  return { canonical, inputHash, baseSignals, merged, special };
+}
 
-  // Optional LLM enrichment (cache-first, injectable, with self-consistency).
-  let llm: PiiAssessment | null = null;
-  let cached = false;
-  let divergence: string | null = null;
-  const inferFn = deps.infer ?? (isAiConfigured() ? defaultInfer() : undefined);
+/** C1: a clearly-operational column safe to resolve not_pii without the LLM (safety-gated). */
+function canShortCircuit(input: DetectionInput, ctx: InferContext, base: DeterministicBase): boolean {
+  return (
+    ctx.shortCircuitOperational !== false &&
+    base.merged.verdict !== "pii" &&
+    !base.special &&
+    isOperationalColumn(input.attribute.columnName) &&
+    !hintsSpecialCategory(input.attribute.columnName)
+  );
+}
 
-  if (inferFn) {
-    const readCache = deps.getCached ?? (async (h: string) => (await getCached(h))?.response);
-    const writeCache =
-      deps.putCache ??
-      (async (h: string, response: Record<string, unknown>) =>
-        putCache({
-          inputHash: h,
-          response,
-          modelId: ctx.modelId,
-          promptVersion: ctx.promptVersion,
-          frameworkVersionId: ctx.frameworkVersionId,
-          engineVersion: ctx.engineVersion,
-          schemaVersion: PII_SCHEMA_VERSION,
-        }));
-
-    const hit = ctx.useCache && !ctx.forceFresh ? await readCache(inputHash) : undefined;
-    if (hit) {
-      llm = hit as unknown as PiiAssessment;
-      cached = true;
-    } else if (ctx.selfConsistencySamples > 1) {
-      // §7.4: N samples with distinct seeds; unanimous -> that verdict, else uncertain.
-      const samples: PiiAssessment[] = [];
-      for (let i = 0; i < ctx.selfConsistencySamples; i++) {
-        const r = await inferFn(canonical, ctx.systemPrompt, ctx.seed + i);
-        if (r) samples.push(r);
-      }
-      if (samples.length > 0) {
-        const verdicts = samples.map((s) => s.verdict);
-        const unanimous = verdicts.every((v) => v === verdicts[0]);
-        if (unanimous) {
-          llm = samples[0];
-        } else {
-          divergence = verdicts.join(", ");
-          llm = { ...samples[0], verdict: "uncertain" };
-        }
-        if (ctx.useCache) await writeCache(inputHash, llm as unknown as Record<string, unknown>);
-      }
-    } else {
-      llm = await inferFn(canonical, ctx.systemPrompt, ctx.seed);
-      // Only persist to the cache when caching is enabled (force-fresh still writes).
-      if (llm && ctx.useCache) await writeCache(inputHash, llm as unknown as Record<string, unknown>);
-    }
-  }
-
-  // A configured LLM that was attempted but produced no result (rate limit / timeout / unreachable)
-  // must NOT silently fall through to a deterministic not_pii — surface it as uncertain for review.
-  const llmFailed = !deps.infer && isAiConfigured() && !cached && llm === null;
+/** Assemble the final inference from the deterministic base + an optional LLM assessment. Shared
+ *  by the single-column and batch paths so both apply identical guardrails, floors and rationale. */
+function assembleInference(
+  input: DetectionInput,
+  ctx: InferContext,
+  base: DeterministicBase,
+  opts: { llm: PiiAssessment | null; cached: boolean; llmFailed: boolean; divergence: string | null },
+): PiiInferenceOut {
+  const { merged, special, baseSignals, inputHash } = base;
+  const { llm, cached, llmFailed, divergence } = opts;
 
   // #3: the model flagged that the column name and description describe different things. It has
-  // already classified from the NAME (per the prompt) and downgraded confidence itself; here we only
-  // SURFACE the data-quality issue (source layer + rationale) so a steward fixes the description.
+  // already classified from the NAME (per the prompt); here we only SURFACE the data-quality issue.
   const metadataConflict = llm?.metadataConflict === true;
 
   let verdict: DetectionVerdict = llm?.verdict ?? merged.verdict;
@@ -289,10 +302,8 @@ export async function inferPiiForAttribute(
     };
   });
 
-  // #6/#7 guardrail: a "pii" verdict resting ONLY on Contextual Risk is an association-with-the-asset
-  // call, not intrinsic personal content. For plain operational/system columns (audit timestamps,
-  // flags, versions, sequence keys) that is a false positive → not_pii; otherwise it survives but as a
-  // low-confidence, review-pending call (never auto-accepted on association alone).
+  // #6/#7 guardrail: a "pii" verdict resting ONLY on Contextual Risk is association-with-the-asset,
+  // not intrinsic personal content. Operational columns → not_pii; otherwise cap confidence.
   const appliedCodes = assessments.filter((a) => a.applies).map((a) => a.criterionCode);
   const onlyContextual = appliedCodes.length > 0 && appliedCodes.every((c) => c === "CONTEXTUAL");
   if (verdict === "pii" && onlyContextual) {
@@ -337,4 +348,157 @@ export async function inferPiiForAttribute(
     inputHash,
     cached,
   };
+}
+
+export async function inferPiiForAttribute(
+  input: DetectionInput,
+  ctx: InferContext,
+  deps: InferDeps,
+): Promise<PiiInferenceOut> {
+  const base = deterministicBase(input, ctx);
+  if (canShortCircuit(input, ctx, base)) return operationalNotPii(input, ctx, base.inputHash);
+
+  // Optional LLM enrichment (cache-first, injectable, with self-consistency).
+  let llm: PiiAssessment | null = null;
+  let cached = false;
+  let divergence: string | null = null;
+  const inferFn = deps.infer ?? (isAiConfigured() ? defaultInfer() : undefined);
+
+  if (inferFn) {
+    const readCache = deps.getCached ?? (async (h: string) => (await getCached(h))?.response);
+    const writeCache =
+      deps.putCache ??
+      (async (h: string, response: Record<string, unknown>) =>
+        putCache({
+          inputHash: h,
+          response,
+          modelId: ctx.modelId,
+          promptVersion: ctx.promptVersion,
+          frameworkVersionId: ctx.frameworkVersionId,
+          engineVersion: ctx.engineVersion,
+          schemaVersion: PII_SCHEMA_VERSION,
+        }));
+
+    const hit = ctx.useCache && !ctx.forceFresh ? await readCache(base.inputHash) : undefined;
+    if (hit) {
+      llm = hit as unknown as PiiAssessment;
+      cached = true;
+    } else if (ctx.selfConsistencySamples > 1) {
+      // §7.4: N samples with distinct seeds; unanimous -> that verdict, else uncertain.
+      const samples: PiiAssessment[] = [];
+      for (let i = 0; i < ctx.selfConsistencySamples; i++) {
+        const r = await inferFn(base.canonical, ctx.systemPrompt, ctx.seed + i);
+        if (r) samples.push(r);
+      }
+      if (samples.length > 0) {
+        const verdicts = samples.map((s) => s.verdict);
+        const unanimous = verdicts.every((v) => v === verdicts[0]);
+        if (unanimous) {
+          llm = samples[0];
+        } else {
+          divergence = verdicts.join(", ");
+          llm = { ...samples[0], verdict: "uncertain" };
+        }
+        if (ctx.useCache) await writeCache(base.inputHash, llm as unknown as Record<string, unknown>);
+      }
+    } else {
+      llm = await inferFn(base.canonical, ctx.systemPrompt, ctx.seed);
+      // Only persist to the cache when caching is enabled (force-fresh still writes).
+      if (llm && ctx.useCache) await writeCache(base.inputHash, llm as unknown as Record<string, unknown>);
+    }
+  }
+
+  // A configured LLM attempted but with no result (rate limit / timeout / unreachable) must NOT
+  // silently fall through to not_pii — assembleInference surfaces it as uncertain for review.
+  const llmFailed = !deps.infer && isAiConfigured() && !cached && llm === null;
+  return assembleInference(input, ctx, base, { llm, cached, llmFailed, divergence });
+}
+
+const PII_ASSESS_BATCH_SCHEMA: JsonSchemaSpec = {
+  name: "pii_assessment_batch",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["items"],
+    properties: {
+      items: { type: "array", items: PII_ASSESS_SCHEMA.schema },
+    },
+  },
+};
+
+/** One LLM call for several columns (C2 prototype). Explicitly instructs per-column independence
+ *  to avoid the "the table has PII so every column is PII" halo. One assessment per payload. */
+async function defaultBatchInfer(payloads: CanonicalAttribute[], systemPrompt: string, seed?: number): Promise<(PiiAssessment | null)[]> {
+  for (const p of payloads) assertNoDataValues(p as unknown as Record<string, unknown>);
+  const prompt =
+    `Assess EACH of the following ${payloads.length} attributes INDEPENDENTLY against all five criteria, using ONLY that attribute's own metadata. ` +
+    `Judge every attribute on its OWN column — do NOT let one attribute's personal data influence another's verdict; each is a separate decision. ` +
+    `Return {"items": [...]} where items[i] is the assessment for attributes[i], in the same order.\n\nattributes:\n${JSON.stringify(payloads, null, 2)}`;
+  try {
+    const raw = await aiComplete({ system: systemPrompt, prompt, schema: PII_ASSESS_BATCH_SCHEMA, temperature: 0, topP: 1, seed });
+    const parsed = extractJson<{ items: PiiAssessment[] }>(raw);
+    const items = Array.isArray(parsed?.items) ? parsed.items : [];
+    return payloads.map((_, i) => items[i] ?? null);
+  } catch (err) {
+    if (err instanceof AiUnavailableError) return payloads.map(() => null);
+    throw err;
+  }
+}
+
+/** Batch variant of inferPiiForAttribute: short-circuits + cache-hits resolve per column; the
+ *  remaining misses go out in ONE LLM call. Returns one result per input, in order. */
+export async function inferPiiForBatch(inputs: DetectionInput[], ctx: InferContext, deps: InferDeps): Promise<PiiInferenceOut[]> {
+  const bases = inputs.map((inp) => deterministicBase(inp, ctx));
+  const results: (PiiInferenceOut | null)[] = new Array(inputs.length).fill(null);
+
+  const inferFn = deps.infer ?? (isAiConfigured() ? defaultInfer() : undefined);
+  const readCache = deps.getCached ?? (async (h: string) => (await getCached(h))?.response);
+  const writeCache =
+    deps.putCache ??
+    (async (h: string, response: Record<string, unknown>) =>
+      putCache({
+        inputHash: h,
+        response,
+        modelId: ctx.modelId,
+        promptVersion: ctx.promptVersion,
+        frameworkVersionId: ctx.frameworkVersionId,
+        engineVersion: ctx.engineVersion,
+        schemaVersion: PII_SCHEMA_VERSION,
+      }));
+
+  const pending: number[] = [];
+  for (let i = 0; i < inputs.length; i++) {
+    if (canShortCircuit(inputs[i], ctx, bases[i])) {
+      results[i] = operationalNotPii(inputs[i], ctx, bases[i].inputHash);
+      continue;
+    }
+    if (!inferFn) {
+      results[i] = assembleInference(inputs[i], ctx, bases[i], { llm: null, cached: false, llmFailed: false, divergence: null });
+      continue;
+    }
+    if (ctx.useCache && !ctx.forceFresh) {
+      const hit = await readCache(bases[i].inputHash);
+      if (hit) {
+        results[i] = assembleInference(inputs[i], ctx, bases[i], { llm: hit as unknown as PiiAssessment, cached: true, llmFailed: false, divergence: null });
+        continue;
+      }
+    }
+    pending.push(i);
+  }
+
+  if (pending.length > 0 && inferFn) {
+    const payloads = pending.map((i) => bases[i].canonical);
+    // Injected single-column stub (tests) → map per column; real path → one batched call.
+    const batchOut = deps.infer
+      ? await Promise.all(payloads.map((p) => deps.infer!(p, ctx.systemPrompt, ctx.seed)))
+      : await defaultBatchInfer(payloads, ctx.systemPrompt, ctx.seed);
+    for (let k = 0; k < pending.length; k++) {
+      const i = pending[k];
+      const llm = batchOut[k] ?? null;
+      if (llm && ctx.useCache) await writeCache(bases[i].inputHash, llm as unknown as Record<string, unknown>);
+      results[i] = assembleInference(inputs[i], ctx, bases[i], { llm, cached: false, llmFailed: llm === null, divergence: null });
+    }
+  }
+
+  return results.map((r, i) => r ?? assembleInference(inputs[i], ctx, bases[i], { llm: null, cached: false, llmFailed: false, divergence: null }));
 }

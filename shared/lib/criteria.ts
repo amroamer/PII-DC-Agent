@@ -83,6 +83,15 @@ export function isCriterionCode(value: unknown): value is CriterionCode {
   return typeof value === "string" && (CRITERION_CODES as readonly string[]).includes(value);
 }
 
+/** Headline criterion when several apply — most-specific/strongest first. No CONTEXTUAL fallback. */
+export const CRITERION_PRECEDENCE: CriterionCode[] = ["DIRECT_ID", "SPECIAL_CATEGORY", "INDIRECT_ID", "REGULATORY", "CONTEXTUAL"];
+
+/** The single headline criterion among a set of applied codes (precedence order), or null. */
+export function primaryCriterion(appliedCodes: Iterable<string>): CriterionCode | null {
+  const set = new Set(appliedCodes);
+  return CRITERION_PRECEDENCE.find((c) => set.has(c)) ?? null;
+}
+
 export function criterionName(code: CriterionCode, lang: "en" | "ar" = "en"): string {
   const def = POLICY_CRITERIA[code];
   return lang === "ar" ? def.nameAr : def.nameEn;

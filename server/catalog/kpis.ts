@@ -86,6 +86,77 @@ export async function getAttributeKpis(filters: FilterState) {
   };
 }
 
+export interface PiiDensityRow {
+  key: string;
+  label: string;
+  total: number;
+  analysed: number;
+  pii: number;
+  special: number;
+  density: number; // pii / total, 0..1
+}
+
+/**
+ * PII density (E): where personal data concentrates. Two breakdowns off the committed
+ * `detections` — by business domain (jsonb array, unnested so each domain is its own row)
+ * and the top tables by PII count. Reads committed detections, so it reflects approved +
+ * auto-published ("commit & see") results. `special` uses detections.criterion_code, which
+ * approve/publish now set to the headline criterion.
+ */
+export async function getPiiDensity(topTables = 20): Promise<{ byDomain: PiiDensityRow[]; byTable: PiiDensityRow[] }> {
+  const analysed = sql`EXISTS (SELECT 1 FROM detections d WHERE d.attribute_id = at.id)`;
+  const isPii = sql`EXISTS (SELECT 1 FROM detections d WHERE d.attribute_id = at.id AND d.verdict = 'pii')`;
+  const isSpecial = sql`EXISTS (SELECT 1 FROM detections d WHERE d.attribute_id = at.id AND d.criterion_code = 'SPECIAL_CATEGORY')`;
+
+  const domainRes = await db.execute(sql`
+    SELECT dom AS key,
+           count(DISTINCT at.id)::int AS total,
+           count(DISTINCT at.id) FILTER (WHERE ${analysed})::int AS analysed,
+           count(DISTINCT at.id) FILTER (WHERE ${isPii})::int AS pii,
+           count(DISTINCT at.id) FILTER (WHERE ${isSpecial})::int AS special
+    FROM assets a
+    CROSS JOIN LATERAL jsonb_array_elements_text(CASE WHEN jsonb_typeof(a.business_domain) = 'array' THEN a.business_domain ELSE '[]'::jsonb END) AS dom
+    JOIN attributes at ON at.asset_id = a.id
+    GROUP BY dom
+    HAVING count(DISTINCT at.id) > 0
+    ORDER BY pii DESC, total DESC
+    LIMIT 30
+  `);
+
+  const tableRes = await db.execute(sql`
+    SELECT a.id AS key, a.name AS label,
+           count(DISTINCT at.id)::int AS total,
+           count(DISTINCT at.id) FILTER (WHERE ${analysed})::int AS analysed,
+           count(DISTINCT at.id) FILTER (WHERE ${isPii})::int AS pii,
+           count(DISTINCT at.id) FILTER (WHERE ${isSpecial})::int AS special
+    FROM assets a
+    JOIN attributes at ON at.asset_id = a.id
+    GROUP BY a.id, a.name
+    HAVING count(DISTINCT at.id) FILTER (WHERE ${isPii}) > 0
+    ORDER BY pii DESC, total DESC
+    LIMIT ${topTables}
+  `);
+
+  const toRow = (r: Record<string, unknown>): PiiDensityRow => {
+    const total = Number(r.total) || 0;
+    const pii = Number(r.pii) || 0;
+    return {
+      key: String(r.key),
+      label: r.label != null ? String(r.label) : String(r.key),
+      total,
+      analysed: Number(r.analysed) || 0,
+      pii,
+      special: Number(r.special) || 0,
+      density: total ? pii / total : 0,
+    };
+  };
+
+  return {
+    byDomain: (domainRes.rows as Record<string, unknown>[]).map(toRow),
+    byTable: (tableRes.rows as Record<string, unknown>[]).map(toRow),
+  };
+}
+
 export async function getAssetKpis(filters: FilterState) {
   const ids = await resolveAssetIds(filters);
   const total = await scalar(db.select({ n: sql<number>`count(*)::int` }).from(assets));

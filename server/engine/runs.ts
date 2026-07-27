@@ -19,10 +19,11 @@ import {
   type Selection,
 } from "@shared/models/schema";
 import type { CriterionCode, CriterionDef } from "@shared/lib/criteria";
-import { CRITERION_CODES } from "@shared/lib/criteria";
+import { CRITERION_CODES, CRITERION_PRECEDENCE } from "@shared/lib/criteria";
 import type { ClassificationCode } from "@shared/lib/classification";
 import { getDataClasses, getPrompt, getSetting } from "../reference-cache";
-import { classifyByRules, type ClassificationRule } from "../classification-engine/attribute-rules";
+import { classifyByRules, reconcileLevel, type ClassificationRule } from "../classification-engine/attribute-rules";
+import { inferClassificationLevel, type ClassInferContext } from "../classification-engine/classify-infer";
 import type { CatalogScreen } from "@shared/lib/filter-defs";
 import { joinFacet } from "@shared/lib/facets";
 import { resolveSelection } from "../catalog/query";
@@ -31,10 +32,11 @@ import {
   getActiveFrameworkVersion,
   getActivePiiCriteria,
 } from "../frameworks/store";
-import { inferPiiForAttribute, type InferContext, type InferDeps } from "./infer";
+import { inferPiiForAttribute, inferPiiForBatch, PII_SCHEMA_VERSION, type InferContext, type InferDeps, type PiiInferenceOut } from "./infer";
+import { publishConfidentRun } from "./approve";
 import { AdaptiveRunner } from "./adaptive-runner";
 import { RateLimitError } from "../ai-provider";
-import { batchify, sortCanonical } from "../pii-engine/canonicalize";
+import { batchify, canonicalizeAttribute, computeInputHash, sortCanonical } from "../pii-engine/canonicalize";
 import type { DetectionInput } from "../pii-engine/types";
 
 export interface CreateRunInput {
@@ -105,14 +107,38 @@ async function prepareRun(input: CreateRunInput, actorId: number | null): Promis
     getSetting<number>("confidence_review_threshold") ??
     0.6;
   const modelId = process.env.OPENAI_MODEL ?? "deterministic-local";
-  const promptVersion = `pii_detection_classify@5`;
+  // The PII inference always hashes against the PII prompt version (so its cache is
+  // shared across engine types); the run row records the prompt that DEFINED the run.
+  const piiPromptVersion = `pii_detection_classify@5`;
+  const classPromptVersion = `classification_classify@2`;
+  const runPromptVersion = input.engineType === "classification" ? classPromptVersion : piiPromptVersion;
   const seed = getSetting<number>("inference_seed") ?? 42;
   const framework = await getActiveFrameworkVersion(input.engineType);
 
+  // Composed once here (not just in ctx) so the incremental hash below matches exactly
+  // what inferPiiForAttribute will compute — same prompt, same framework, same versions.
+  const codes = activeCriteria(input.params);
+  const piiCriteria = await getActivePiiCriteria();
+  const systemPrompt = composeSystemPrompt(getPrompt("pii_detection_classify"), piiCriteria, codes);
+
   let targetIds = await resolveSelection("attributes", input.selection as any);
 
-  // "Skip items already approved" — exclude attributes that already carry a detection.
-  if (input.params.skipApproved !== false && targetIds.length) {
+  if (input.engineType === "pii" && input.params.incremental === true && targetIds.length) {
+    // Incremental re-scan: keep only columns whose committed detection reflects a DIFFERENT
+    // model input (or none). Identical inputHash ⇒ identical result ⇒ nothing to re-learn.
+    // Supersedes the coarse skipApproved. Verified against detections (the committed catalog).
+    const before = targetIds.length;
+    targetIds = await dropUnchangedTargets(targetIds, {
+      promptVersion: piiPromptVersion,
+      frameworkVersion: framework.version,
+      modelId,
+      engineVersion,
+      systemPrompt,
+    });
+    // eslint-disable-next-line no-console
+    console.log(`Engine run (incremental): ${before} selected → ${targetIds.length} new/changed (${before - targetIds.length} unchanged, skipped).`);
+  } else if (input.params.skipApproved !== false && targetIds.length) {
+    // "Skip items already approved" — exclude attributes that already carry a detection.
     const existing = await db
       .selectDistinct({ id: detections.attributeId })
       .from(detections)
@@ -143,7 +169,7 @@ async function prepareRun(input: CreateRunInput, actorId: number | null): Promis
       previousRunId,
       runNote: typeof input.params.runNote === "string" ? input.params.runNote : undefined,
       modelId,
-      promptVersion,
+      promptVersion: runPromptVersion,
       frameworkVersionId: framework.id ?? undefined,
       engineVersion,
       temperature: 0,
@@ -152,8 +178,6 @@ async function prepareRun(input: CreateRunInput, actorId: number | null): Promis
     })
     .returning();
 
-  const codes = activeCriteria(input.params);
-  const piiCriteria = await getActivePiiCriteria();
   const classificationRules =
     input.engineType === "classification" ? await getActiveClassificationRules() : [];
 
@@ -162,15 +186,82 @@ async function prepareRun(input: CreateRunInput, actorId: number | null): Promis
     params: input.params,
     threshold,
     modelId,
-    promptVersion,
+    promptVersion: piiPromptVersion,
+    classPromptVersion,
     engineVersion,
     framework,
     seed,
-    systemPrompt: composeSystemPrompt(getPrompt("pii_detection_classify"), piiCriteria, codes),
+    systemPrompt,
+    classSystemPrompt: getPrompt("classification_classify"),
     criteria: codes,
     classificationRules,
   };
   return { run, targetIds, ctx };
+}
+
+interface IncrementalHashCtx {
+  promptVersion: string;
+  frameworkVersion: string;
+  modelId: string;
+  engineVersion: string;
+  systemPrompt: string;
+}
+
+/**
+ * Incremental filter (B): return only the target ids whose freshly-computed inputHash
+ * differs from (or has no) committed detection. Recomputes the SAME canonical payload +
+ * hash the inference layer uses, so an unchanged column is provably a no-op to re-scan.
+ */
+async function dropUnchangedTargets(targetIds: number[], hc: IncrementalHashCtx): Promise<number[]> {
+  const attrRows = await db.select().from(attributes).where(inArray(attributes.id, targetIds));
+  const assetIds = [...new Set(attrRows.map((a) => a.assetId))];
+  const assetRows = assetIds.length ? await db.select().from(assets).where(inArray(assets.id, assetIds)) : [];
+  const assetMap = new Map<number, Asset>(assetRows.map((a) => [a.id, a]));
+
+  const siblingsByAsset = new Map<number, string[]>();
+  const allAttrs = assetIds.length ? await db.select().from(attributes).where(inArray(attributes.assetId, assetIds)) : [];
+  for (const a of allAttrs) {
+    const list = siblingsByAsset.get(a.assetId) ?? [];
+    list.push(a.columnName);
+    siblingsByAsset.set(a.assetId, list);
+  }
+
+  // Latest committed detection inputHash per attribute (append-only table → keep newest).
+  const dets = await db
+    .select({ attributeId: detections.attributeId, inputHash: detections.inputHash, createdAt: detections.createdAt })
+    .from(detections)
+    .where(inArray(detections.attributeId, targetIds));
+  const latestHash = new Map<number, string | null>();
+  const latestAt = new Map<number, number>();
+  for (const d of dets) {
+    const t = d.createdAt ? new Date(d.createdAt).getTime() : 0;
+    if (!latestAt.has(d.attributeId) || t >= (latestAt.get(d.attributeId) as number)) {
+      latestAt.set(d.attributeId, t);
+      latestHash.set(d.attributeId, d.inputHash ?? null);
+    }
+  }
+
+  const kept: number[] = [];
+  for (const attr of attrRows) {
+    const asset = assetMap.get(attr.assetId);
+    const siblings = (siblingsByAsset.get(attr.assetId) ?? []).filter((n) => n !== attr.columnName);
+    const canonical = canonicalizeAttribute(
+      attr,
+      { name: asset?.name ?? "", businessDomain: joinFacet(asset?.businessDomain), subjectArea: joinFacet(asset?.subjectArea) },
+      siblings,
+    );
+    const hash = computeInputHash({
+      payload: canonical,
+      promptVersion: hc.promptVersion,
+      frameworkVersion: hc.frameworkVersion,
+      modelId: hc.modelId,
+      engineVersion: hc.engineVersion,
+      schemaVersion: PII_SCHEMA_VERSION,
+      systemPrompt: hc.systemPrompt,
+    });
+    if (latestHash.get(attr.id) !== hash) kept.push(attr.id);
+  }
+  return kept;
 }
 
 /** Ceiling for the adaptive concurrency controller (AdaptiveRunner ramps up to this, backing
@@ -181,8 +272,18 @@ const RUN_CONCURRENCY = Number(process.env.RUN_CONCURRENCY) || 12;
 const rateLimitProbe = (err: unknown): number | null | false =>
   err instanceof RateLimitError ? err.retryAfterMs : false;
 
-/** Headline criterion when several apply — most-specific/strongest first. No CONTEXTUAL fallback. */
-const CRITERION_PRECEDENCE: CriterionCode[] = ["DIRECT_ID", "SPECIAL_CATEGORY", "INDIRECT_ID", "REGULATORY", "CONTEXTUAL"];
+/**
+ * Review priority for a staged item (D): work the riskiest first. A layer conflict is the
+ * most urgent (deterministic and LLM disagree), then an uncertain verdict, then a borderline
+ * confidence near the review threshold, then a plain PII call; confident not_pii is lowest.
+ */
+function runItemPriority(item: { verdict: string | null; confidence: number; conflict: boolean }, threshold: number): number {
+  if (item.conflict) return 100;
+  if (item.verdict === "uncertain") return 80;
+  if (Math.abs(item.confidence - threshold) <= 0.1) return 60;
+  if (item.verdict === "pii") return 40;
+  return 20;
+}
 
 async function executeRun(prepared: PreparedRun, deps: InferDeps): Promise<EngineRun> {
   const { run, targetIds, ctx } = prepared;
@@ -194,6 +295,20 @@ async function executeRun(prepared: PreparedRun, deps: InferDeps): Promise<Engin
       .set({ status: cancelled ? "cancelled" : "completed", completedAt: new Date() })
       .where(eq(engineRuns.id, run.id))
       .returning();
+
+    // "Commit & see" (A): publish confident auto-accepted verdicts to the catalog so
+    // they're visible without a manual approve. A publish failure must NOT fail the run —
+    // the staged results are intact and the steward can still approve manually.
+    if (!cancelled && updated.status === "completed" && ctx.engineType === "pii" && ctx.params.publishConfident === true) {
+      try {
+        const published = await publishConfidentRun(run.id, run.initiatedBy ?? null);
+        // eslint-disable-next-line no-console
+        console.log(`Engine run ${run.id}: auto-published ${published.detectionsWritten} confident detections (commit & see).`);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(`Engine run ${run.id}: auto-publish failed (staged results intact):`, err);
+      }
+    }
     return updated;
   } catch (err) {
     cancelledRuns.delete(run.id);
@@ -229,10 +344,14 @@ interface ProcessCtx {
   threshold: number;
   modelId: string;
   promptVersion: string;
+  /** Prompt version for the classification LLM layer (classification runs only). */
+  classPromptVersion: string;
   engineVersion: string;
   framework: { id: number | null; version: string };
   seed: number;
   systemPrompt: string;
+  /** System prompt for the classification LLM layer (classification runs only). */
+  classSystemPrompt: string;
   criteria: CriterionCode[];
   classificationRules: ClassificationRule[];
 }
@@ -279,6 +398,20 @@ async function processRun(
         ? ctx.params.confidenceFloor
         : getSetting<number>("confidence_floor") ?? 0.3,
     includeArabic: ctx.params.includeArabic !== false,
+    shortCircuitOperational: ctx.params.shortCircuitOperational !== false,
+  };
+
+  const classInferCtx: ClassInferContext = {
+    modelId: ctx.modelId,
+    promptVersion: ctx.classPromptVersion,
+    frameworkVersion: ctx.framework.version,
+    frameworkVersionId: ctx.framework.id,
+    engineVersion: ctx.engineVersion,
+    useCache: ctx.params.useCache !== false,
+    forceFresh: ctx.params.forceFresh === true,
+    systemPrompt: ctx.classSystemPrompt,
+    seed: ctx.seed,
+    includeArabic: ctx.params.includeArabic !== false,
   };
 
   // Deterministic ordering + reproducible batch boundaries (Prompt 2 §7.2).
@@ -286,19 +419,20 @@ async function processRun(
   const ordered = sortCanonical(attrRows);
   const batches = batchify(ordered, batchSize);
 
+  // C2 (prototype, PII only): send several columns per LLM call. Eval-gated — off by default.
+  const batchMode = ctx.engineType === "pii" && ctx.params.batchInference === true;
+  const llmBatchSize = typeof ctx.params.llmBatchSize === "number" ? Math.max(2, ctx.params.llmBatchSize) : 8;
+
   let processed = 0;
   let cachedCount = 0;
   let errorCount = 0;
   // Adaptive concurrency: ramps up to RUN_CONCURRENCY, halves + cools down on any 429.
   const runner = new AdaptiveRunner({ max: RUN_CONCURRENCY });
 
-  for (const batch of batches) {
-   // Cancellation leaves the partial results staged; the catalog stays untouched.
-   if (cancelledRuns.has(run.id)) break;
-   await Promise.all(batch.map(async (attr) => {
+  const buildDetInput = (attr: Attribute): DetectionInput => {
     const asset = assetMap.get(attr.assetId);
     const siblings = (siblingsByAsset.get(attr.assetId) ?? []).filter((n) => n !== attr.columnName);
-    const detInput: DetectionInput = {
+    return {
       attribute: attr,
       asset: {
         id: attr.assetId,
@@ -309,19 +443,36 @@ async function processRun(
       },
       siblingColumnNames: siblings,
     };
+  };
 
+  // Persist ONE attribute's inference (PII or classification). `precomputed` supplies the PII
+  // inference from a batch call; otherwise it is fetched per-column here.
+  const processAttr = async (attr: Attribute, precomputed?: PiiInferenceOut): Promise<void> => {
+    const detInput = buildDetInput(attr);
     try {
-      const inference = await runner.run(() => inferPiiForAttribute(detInput, inferCtx, deps), rateLimitProbe);
+      const inference = precomputed ?? (await runner.run(() => inferPiiForAttribute(detInput, inferCtx, deps), rateLimitProbe));
       if (inference.cached) cachedCount++;
 
-      const isSpecial = specialCodes.has(inference.suggestedClassCode ?? "");
       const appliedCriterion =
         CRITERION_PRECEDENCE.find((code) => inference.assessments.some((a) => a.applies && a.criterionCode === code)) ??
         null;
+      const isSpecial =
+        appliedCriterion === "SPECIAL_CATEGORY" || specialCodes.has(inference.suggestedClassCode ?? "");
 
+      // Run-item fields default to the PII inference; the classification branch overrides
+      // them with the confidentiality LLM's verdict/rationale/confidence.
       let suggestedLevelCode: ClassificationCode | null = null;
+      let itemConfidence = inference.confidence;
+      let itemRationaleEn = inference.rationaleEn;
+      let itemRationaleAr = inference.rationaleAr;
+      let itemSourceLayers = inference.sourceLayers;
+      // For classification, auto-accept rides on the classification confidence; null means
+      // the LLM layer was skipped (offline) and we keep the PII-verdict-based rule below.
+      let classConfidence: number | null = null;
+
       if (ctx.engineType === "classification") {
-        const rule = classifyByRules(
+        // Governance floor: personal data ≥ Confidential, special category → Sensitive, IKC floor.
+        const ruleFloor = classifyByRules(
           {
             verdict: inference.verdict,
             criterion: appliedCriterion,
@@ -329,8 +480,37 @@ async function processRun(
             existingLevel: attr.columnDataClassification ?? null,
           },
           rules,
+        ).level;
+        // Semantic layer can only RAISE the floor (escalate-only), e.g. → Secret for enforcement.
+        const classResult = await runner.run(
+          () =>
+            inferClassificationLevel(
+              detInput,
+              { verdict: inference.verdict, criterion: appliedCriterion, isSpecialCategory: isSpecial },
+              classInferCtx,
+              {},
+            ),
+          rateLimitProbe,
         );
-        suggestedLevelCode = rule.level;
+        suggestedLevelCode = reconcileLevel(classResult.level, ruleFloor);
+        if (classResult.cached) cachedCount++;
+
+        if (classResult.level) {
+          classConfidence = classResult.confidence;
+          itemConfidence = classResult.confidence;
+          itemRationaleEn = classResult.rationaleEn || `Classified ${suggestedLevelCode}.`;
+          itemRationaleAr = classResult.rationaleAr;
+          itemSourceLayers = [
+            "classification_llm",
+            ...(suggestedLevelCode !== classResult.level ? ["rule_floor"] : []),
+          ];
+        } else {
+          // AI layer unavailable — deterministic floor stands (offline-safe, old behaviour).
+          itemConfidence = inference.confidence;
+          itemRationaleEn = `Classified ${suggestedLevelCode} by rule (framework default floor); AI classification layer unavailable.`;
+          itemRationaleAr = "";
+          itemSourceLayers = ["rule_floor"];
+        }
       }
 
       const currentValue =
@@ -338,7 +518,12 @@ async function processRun(
           ? { piiName: attr.piiName, cdeFlag: attr.cdeFlag, columnDataClassification: attr.columnDataClassification }
           : { columnDataClassification: attr.columnDataClassification };
 
-      const autoAccept = inference.confidence >= ctx.threshold && inference.verdict !== "uncertain";
+      const autoAccept =
+        ctx.engineType === "classification"
+          ? classConfidence !== null
+            ? classConfidence >= ctx.threshold
+            : inference.confidence >= ctx.threshold && inference.verdict !== "uncertain"
+          : inference.confidence >= ctx.threshold && inference.verdict !== "uncertain";
 
       const [item] = await db
         .insert(runItems)
@@ -349,10 +534,10 @@ async function processRun(
           verdict: inference.verdict,
           suggestedClassCode: inference.suggestedClassCode,
           suggestedLevelCode,
-          confidence: inference.confidence,
-          rationaleEn: inference.rationaleEn,
-          rationaleAr: inference.rationaleAr,
-          sourceLayers: inference.sourceLayers,
+          confidence: itemConfidence,
+          rationaleEn: itemRationaleEn,
+          rationaleAr: itemRationaleAr,
+          sourceLayers: itemSourceLayers,
           conflict: inference.conflict,
           currentValue,
           stewardDecision: autoAccept ? "accept" : "pending",
@@ -376,10 +561,33 @@ async function processRun(
         );
       }
       processed++;
-      } catch {
-        errorCount++;
-      }
-    }));
+    } catch {
+      errorCount++;
+    }
+  };
+
+  for (const batch of batches) {
+    // Cancellation leaves the partial results staged; the catalog stays untouched.
+    if (cancelledRuns.has(run.id)) break;
+    if (batchMode) {
+      // Chunk each DB batch into small LLM sub-batches; each is one inferPiiForBatch call.
+      const chunks = batchify(batch, llmBatchSize);
+      await Promise.all(
+        chunks.map(async (chunk) => {
+          const inputs = chunk.map(buildDetInput);
+          let inferences: PiiInferenceOut[];
+          try {
+            inferences = await runner.run(() => inferPiiForBatch(inputs, inferCtx, deps), rateLimitProbe);
+          } catch {
+            errorCount += chunk.length;
+            return;
+          }
+          await Promise.all(chunk.map((attr, idx) => processAttr(attr, inferences[idx])));
+        }),
+      );
+    } else {
+      await Promise.all(batch.map((attr) => processAttr(attr)));
+    }
 
     // Persist progress once per batch (batch boundaries are reproducible).
     await db
@@ -425,7 +633,7 @@ export async function compareRuns(runIdA: number, runIdB: number) {
   });
 }
 
-export async function getRunItems(runId: number, filter?: { decision?: string }) {
+export async function getRunItems(runId: number, filter?: { decision?: string; sort?: string }) {
   const items = await db.select().from(runItems).where(eq(runItems.runId, runId));
   const attrIds = items.map((i) => i.targetId);
   const attrRows = attrIds.length ? await db.select().from(attributes).where(inArray(attributes.id, attrIds)) : [];
@@ -444,7 +652,8 @@ export async function getRunItems(runId: number, filter?: { decision?: string })
     byItem.set(a.runItemId, list);
   }
 
-  return items
+  const threshold = getSetting<number>("confidence_review_threshold") ?? 0.6;
+  const mapped = items
     .filter((i) => !filter?.decision || i.stewardDecision === filter.decision)
     .map((i) => {
       const attr = attrMap.get(i.targetId);
@@ -453,8 +662,14 @@ export async function getRunItems(runId: number, filter?: { decision?: string })
         columnName: attr?.columnName ?? null,
         assetName: attr ? assetMap.get(attr.assetId)?.name ?? null : null,
         assessments: byItem.get(i.id) ?? [],
+        priority: runItemPriority(i, threshold),
       };
     });
+
+  // D: default keeps insertion (canonical) order; explicit sorts surface the riskiest first.
+  if (filter?.sort === "priority") mapped.sort((a, b) => b.priority - a.priority || a.confidence - b.confidence);
+  else if (filter?.sort === "confidence") mapped.sort((a, b) => a.confidence - b.confidence);
+  return mapped;
 }
 
 export async function patchRunItem(

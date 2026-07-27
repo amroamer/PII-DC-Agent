@@ -53,11 +53,14 @@ async function main() {
   console.log(`Resolved ${ids.length}/${gold.length} gold columns.`);
 
   // 2. Run a fresh detection over exactly those columns.
+  //    EVAL_BATCH=1 exercises the batched-inference path (C2) for the before/after comparison.
+  const extraParams = process.env.EVAL_BATCH === "1" ? { batchInference: true } : {};
+  if (process.env.EVAL_BATCH === "1") console.log("Mode: BATCH inference (batchInference=true)");
   const cookie = await login();
   const runRes = await fetch(`${BASE}/api/engine-runs`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: cookie },
-    body: JSON.stringify({ engineType: "pii", screen: "attributes", selection: { mode: "include", ids, excluded: [] }, params: { forceFresh: true } }),
+    body: JSON.stringify({ engineType: "pii", screen: "attributes", selection: { mode: "include", ids, excluded: [] }, params: { forceFresh: true, ...extraParams } }),
   });
   const run = (await runRes.json()) as { id: number };
   process.stdout.write(`Run ${run.id} `);
