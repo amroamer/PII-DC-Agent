@@ -71,7 +71,7 @@ function composeSystemPrompt(
     "1. Judge THIS column only. A column is personal only if the column itself stores or reveals personal data. Do NOT mark a column personal merely because it sits in an asset/table that also contains identifiers — identifiers in OTHER columns are not evidence about this column.",
     "2. Recognised identifiers and quasi-identifiers are DIRECT or INDIRECT with real confidence — never demote them to Contextual. DIRECT: full name, national ID / Emirates ID, passport number. INDIRECT (confidence >= 0.7): date of birth, phone / mobile / fax, email, vehicle plate / chassis / VIN, precise address, nationality, and other ID-document numbers. These identify or narrow down a specific person, so tag them accordingly.",
     "3. CONTEXTUAL (Contextual Risk) is the LAST resort: use it ONLY for data that becomes personal solely through aggregation or usage and is NOT itself a recognised identifier (e.g. a free-text remarks field that might contain personal data). It does NOT apply to generic operational or system metadata — created/modified/updated timestamps, boolean flags (is_*, *_flag, enabled/active), status/type codes, row versions, sequence or surrogate keys, counts — even inside a table full of personal data. Those are not_pii.",
-    "4. The column NAME is the primary evidence; the description is secondary and may be wrong. If the name and description clearly disagree (e.g. name 'EXCHANGE_RATE' but description 'vehicle number'), treat the metadata as unreliable: prefer verdict 'uncertain' with confidence <= 0.5 and note the conflict.",
+    "4. The column NAME is the primary evidence; the description is secondary and may be wrong or copied from another table. Set metadataConflict=true when the name and description describe DIFFERENT things (e.g. name 'IMP_NEW_CODE_FLAG' but description 'user who modified'; name 'EXCHANGE_RATE' but description 'vehicle number'); in that case do NOT infer PII from the untrusted description — return verdict 'uncertain' with confidence <= 0.4. When the name and description agree, or the description is blank, set metadataConflict=false and judge from the name.",
     "5. Confidence must reflect INTRINSIC personal content. If a column would only be 'personal' by association/context (no personal data in the column itself), return not_pii. Reserve confidence >= 0.8 for columns whose own content is clearly personal.",
   ].join("\n");
   return `${base}\n\nCriteria reference (apply these exact definitions):\n${block}\n\n${rules}`;
@@ -105,7 +105,7 @@ async function prepareRun(input: CreateRunInput, actorId: number | null): Promis
     getSetting<number>("confidence_review_threshold") ??
     0.6;
   const modelId = process.env.OPENAI_MODEL ?? "deterministic-local";
-  const promptVersion = `pii_detection_classify@3`;
+  const promptVersion = `pii_detection_classify@4`;
   const seed = getSetting<number>("inference_seed") ?? 42;
   const framework = await getActiveFrameworkVersion(input.engineType);
 

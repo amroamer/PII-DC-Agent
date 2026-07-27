@@ -53,6 +53,8 @@ export interface PiiAssessment {
   overallConfidence: number;
   rationaleEn: string;
   rationaleAr: string;
+  /** True when the column name and its description clearly describe different things (bad metadata). */
+  metadataConflict: boolean;
   criteria: Array<{
     code: CriterionCode;
     applies: boolean;
@@ -95,13 +97,14 @@ const PII_ASSESS_SCHEMA: JsonSchemaSpec = {
   schema: {
     type: "object",
     additionalProperties: false,
-    required: ["verdict", "suggestedDataClass", "overallConfidence", "rationaleEn", "rationaleAr", "criteria"],
+    required: ["verdict", "suggestedDataClass", "overallConfidence", "rationaleEn", "rationaleAr", "metadataConflict", "criteria"],
     properties: {
       verdict: { type: "string", enum: ["pii", "not_pii", "uncertain"] },
       suggestedDataClass: { type: ["string", "null"] },
       overallConfidence: { type: "number", minimum: 0, maximum: 1 },
       rationaleEn: { type: "string" },
       rationaleAr: { type: "string" },
+      metadataConflict: { type: "boolean" },
       criteria: {
         type: "array",
         items: {
@@ -241,10 +244,18 @@ export async function inferPiiForAttribute(
   // must NOT silently fall through to a deterministic not_pii — surface it as uncertain for review.
   const llmFailed = !deps.infer && isAiConfigured() && !cached && llm === null;
 
+  // #3: the model flagged the column name and its description as describing different things.
+  // The metadata is untrustworthy, so don't confidently tag it — hold for a steward to fix.
+  const metadataConflict = llm?.metadataConflict === true;
+
   let verdict: DetectionVerdict = llm?.verdict ?? merged.verdict;
   let confidence = llm?.overallConfidence ?? merged.confidence;
   // §6.1 Panel C: a verdict below the confidence floor is forced to uncertain.
   if (verdict === "pii" && confidence < ctx.confidenceFloor) verdict = "uncertain";
+  if (metadataConflict && verdict === "pii") {
+    verdict = "uncertain";
+    confidence = Math.min(confidence, 0.4);
+  }
   if (llmFailed) {
     verdict = "uncertain";
     confidence = 0;
@@ -309,15 +320,18 @@ export async function inferPiiForAttribute(
       ? "AI inference was unavailable for this attribute (rate limit / timeout / unreachable); held as uncertain for steward review — not auto-classified."
       : divergence
         ? `Self-consistency divergence across ${ctx.selfConsistencySamples} samples (${divergence}); held as uncertain.`
-        : llm?.rationaleEn ?? merged.rationaleEn,
+        : (metadataConflict ? "Data-quality issue: the column name and its description describe different things, so the metadata is unreliable — held for steward review (fix the description). " : "") +
+          (llm?.rationaleEn ?? merged.rationaleEn),
     rationaleAr: ar(
       llmFailed
         ? "تعذّر إجراء الاستدلال بالذكاء الاصطناعي لهذه السمة (حد المعدل / مهلة)؛ مُعلّقة للمراجعة."
-        : llm?.rationaleAr ?? merged.rationaleAr,
+        : (metadataConflict ? "مشكلة جودة بيانات: اسم العمود ووصفه غير متطابقين، لذا البيانات الوصفية غير موثوقة — مُعلّقة للمراجعة. " : "") +
+          (llm?.rationaleAr ?? merged.rationaleAr),
     ),
     sourceLayers: [
       ...merged.contributingLayers,
       ...(llm ? ["llm"] : []),
+      ...(metadataConflict ? ["metadata_conflict"] : []),
       ...(llmFailed ? ["llm_unavailable"] : []),
       ...(divergence ? ["self_consistency"] : []),
     ],

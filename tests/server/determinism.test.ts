@@ -58,6 +58,7 @@ const stub = async (): Promise<PiiAssessment> => ({
   overallConfidence: 0.9,
   rationaleEn: "reason",
   rationaleAr: "سبب",
+  metadataConflict: false,
   criteria: CRITERION_CODES.map((code) => ({
     code,
     applies: code === "DIRECT_ID",
