@@ -19,14 +19,18 @@ async function scalar(query: Promise<{ n: number }[]>): Promise<number> {
 export async function getAttributeKpis(filters: FilterState) {
   const ids = await resolveAttributeIds(filters);
   const total = await scalar(db.select({ n: sql<number>`count(*)::int` }).from(attributes));
+  const tablesTotal = await scalar(db.select({ n: sql<number>`count(*)::int` }).from(assets));
 
   if (ids.length === 0) {
     return {
       inView: 0,
       total,
+      tablesTotal,
+      tablesAnalysed: 0,
       pii: 0,
       specialCategory: 0,
       analysed: 0,
+      conflicts: 0,
       pendingReview: 0,
       uncertain: 0,
       avgConfidence: 0,
@@ -45,13 +49,17 @@ export async function getAttributeKpis(filters: FilterState) {
   const clsScope = scopeAll ? sql`true` : inArray(classifications.targetId, ids);
   const rvScope = scopeAll ? sql`true` : inArray(reviewItems.targetId, ids);
 
-  const [verdictRows, criterionRows, levelRows, confRows, analysed, pendingReview] = await Promise.all([
+  const [verdictRows, criterionRows, levelRows, confRows, analysed, pendingReview, tablesAnalysed, conflicts] = await Promise.all([
     db.select({ verdict: detections.verdict, n: sql<number>`count(distinct ${detections.attributeId})::int` }).from(detections).where(detScope).groupBy(detections.verdict),
     db.select({ criterion: detections.criterionCode, n: sql<number>`count(distinct ${detections.attributeId})::int` }).from(detections).where(detScope).groupBy(detections.criterionCode),
     db.select({ level: classifications.levelCode, n: sql<number>`count(distinct ${classifications.targetId})::int` }).from(classifications).where(and(eq(classifications.scope, "attribute"), isNull(classifications.supersededBy), clsScope)).groupBy(classifications.levelCode),
     db.select({ avg: sql<number>`coalesce(avg(${detections.confidence}), 0)::float`, below: sql<number>`count(*) filter (where ${detections.confidence} < ${threshold})::int` }).from(detections).where(and(detScope, eq(detections.verdict, "pii"))),
     scalar(db.select({ n: sql<number>`count(distinct ${detections.attributeId})::int` }).from(detections).where(detScope)),
     scalar(db.select({ n: sql<number>`count(*)::int` }).from(reviewItems).where(and(eq(reviewItems.targetType, "attribute"), eq(reviewItems.status, "pending"), rvScope))),
+    // Tables (assets) with at least one analysed column.
+    scalar(db.select({ n: sql<number>`count(distinct ${attributes.assetId})::int` }).from(attributes).innerJoin(detections, eq(detections.attributeId, attributes.id)).where(scopeAll ? sql`true` : inArray(attributes.id, ids))),
+    // Columns with a layer conflict (both a pii and a not_pii detection).
+    scalar(db.select({ n: sql<number>`count(distinct ${detections.attributeId})::int` }).from(detections).where(and(detScope, eq(detections.verdict, "pii"), sql`EXISTS (SELECT 1 FROM detections d2 WHERE d2.attribute_id = ${detections.attributeId} AND d2.verdict = 'not_pii')`))),
   ]);
 
   const byVerdict: Record<string, number> = {};
@@ -74,9 +82,12 @@ export async function getAttributeKpis(filters: FilterState) {
   return {
     inView: ids.length,
     total,
+    tablesTotal,
+    tablesAnalysed,
     pii: byVerdict.pii ?? 0,
     specialCategory: criteriaDistribution.SPECIAL_CATEGORY ?? 0,
     analysed,
+    conflicts,
     pendingReview,
     uncertain: byVerdict.uncertain ?? 0,
     avgConfidence: Number((confRows[0]?.avg ?? 0).toFixed(3)),

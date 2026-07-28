@@ -20,10 +20,11 @@ import {
 } from "@shared/models/schema";
 import type { CriterionCode, CriterionDef } from "@shared/lib/criteria";
 import { CRITERION_CODES, CRITERION_PRECEDENCE } from "@shared/lib/criteria";
-import type { ClassificationCode } from "@shared/lib/classification";
+import { moreRestrictive, type ClassificationCode } from "@shared/lib/classification";
 import { getDataClasses, getPrompt, getSetting } from "../reference-cache";
 import { classifyByRules, reconcileLevel, reconciliationNote, type ClassificationRule } from "../classification-engine/attribute-rules";
 import { inferClassificationLevel, type ClassInferContext } from "../classification-engine/classify-infer";
+import { sensitivityFloor } from "../classification-engine/sensitivity";
 import type { CatalogScreen } from "@shared/lib/filter-defs";
 import { joinFacet } from "@shared/lib/facets";
 import { resolveSelection } from "../catalog/query";
@@ -56,18 +57,28 @@ function activeCriteria(params: Record<string, unknown>): CriterionCode[] {
 
 /**
  * Appends the active framework's criterion definitions to the base detection
- * prompt so steward edits to a criterion's name/description actually steer the
- * model. The framework version is part of the inference cache key, so an edit
- * (which bumps the version) invalidates stale cached verdicts.
+ * prompt so steward edits to a criterion's name/description AND its evaluation
+ * mode actually steer the model. Each criterion is annotated with its mode
+ * (intrinsic = decide from this column's own metadata alone; contextual = may
+ * also need semantic/aggregation judgement), and a short guide explains the two.
+ * The composed prompt is part of the inference input hash, so a mode edit — like
+ * a name/description edit — invalidates stale cached verdicts.
  */
-function composeSystemPrompt(
+export function composeSystemPrompt(
   base: string,
   criteria: CriterionDef[],
   activeCodes: CriterionCode[],
 ): string {
   const active = criteria.filter((c) => activeCodes.includes(c.code));
   if (active.length === 0) return base;
-  const block = active.map((c) => `- ${c.code} (${c.nameEn}): ${c.description}`).join("\n");
+  const block = active
+    .map((c) => `- ${c.code} (${c.nameEn}) [${c.evaluationMode}]: ${c.description}`)
+    .join("\n");
+  const modeGuide = [
+    "Evaluation mode (the [bracketed] tag on each criterion):",
+    "- intrinsic: decide it from THIS column's own metadata (name/description) alone — a recognised identifier is intrinsic and must be tagged confidently on the column itself.",
+    "- contextual: it applies only through semantic judgement, usage, or how this column combines with others; never let a contextual criterion alone make an operational/system column personal.",
+  ].join("\n");
   const rules = [
     "Classification rules (apply strictly):",
     "1. Judge THIS column only. A column is personal only if the column itself stores or reveals personal data. Do NOT mark a column personal merely because it sits in an asset/table that also contains identifiers — identifiers in OTHER columns are not evidence about this column.",
@@ -76,7 +87,7 @@ function composeSystemPrompt(
     "4. The column NAME is the primary evidence; the description is secondary and may be wrong or copied from another table. Set metadataConflict=true when the name and description describe DIFFERENT things (e.g. name 'IMP_NEW_CODE_FLAG' but description 'user who modified'; name 'EXCHANGE_RATE' but description 'vehicle number'). On a conflict, IGNORE the description and classify from the NAME: if the name alone clearly identifies the data (e.g. EMAIL, PASSPORT_NO, MOBILE_NO, a person's name), give a confident verdict from the name; only when the name is ALSO unclear return verdict 'uncertain' with confidence <= 0.4. When name and description agree, or the description is blank, set metadataConflict=false and judge from the name.",
     "5. Confidence must reflect INTRINSIC personal content. If a column would only be 'personal' by association/context (no personal data in the column itself), return not_pii. Reserve confidence >= 0.8 for columns whose own content is clearly personal.",
   ].join("\n");
-  return `${base}\n\nCriteria reference (apply these exact definitions):\n${block}\n\n${rules}`;
+  return `${base}\n\nCriteria reference (apply these exact definitions):\n${block}\n\n${modeGuide}\n\n${rules}`;
 }
 
 // In-memory cancellation signal. processRun checks it between batches.
@@ -470,9 +481,10 @@ async function processRun(
       // the LLM layer was skipped (offline) and we keep the PII-verdict-based rule below.
       let classConfidence: number | null = null;
 
+      let kwFloor: ClassificationCode | null = null;
       if (ctx.engineType === "classification") {
         // Governance floor: personal data ≥ Confidential, special category → Sensitive, IKC floor.
-        const ruleFloor = classifyByRules(
+        let ruleFloor = classifyByRules(
           {
             verdict: inference.verdict,
             criterion: appliedCriterion,
@@ -481,6 +493,11 @@ async function processRun(
           },
           rules,
         ).level;
+        // §8.2 deterministic sensitivity floor: non-personal sensitive (trade-secret/source/security)
+        // → Sensitive; credentials / classified / enforcement-person → Secret. The reliable backstop
+        // when the AI layer misses or is unavailable.
+        kwFloor = sensitivityFloor({ columnName: attr.columnName, descriptionEn: attr.descriptionEn });
+        if (kwFloor) ruleFloor = moreRestrictive(ruleFloor, kwFloor);
         // Semantic layer can only RAISE the floor (escalate-only), e.g. → Secret for enforcement.
         const classResult = await runner.run(
           () =>
@@ -511,14 +528,17 @@ async function processRun(
           itemRationaleAr = recon.ar + classResult.rationaleAr;
           itemSourceLayers = [
             "classification_llm",
+            ...(kwFloor ? ["sensitivity_keyword"] : []),
             ...(suggestedLevelCode !== classResult.level ? ["rule_floor"] : []),
           ];
         } else {
-          // AI layer unavailable — deterministic floor stands (offline-safe, old behaviour).
-          itemConfidence = inference.confidence;
-          itemRationaleEn = `Classified ${suggestedLevelCode} by rule (framework default floor); AI classification layer unavailable.`;
+          // AI layer unavailable — deterministic floor (incl. §8.2 sensitivity keywords) stands.
+          itemConfidence = kwFloor ? Math.max(inference.confidence, 0.75) : inference.confidence;
+          itemRationaleEn = kwFloor
+            ? `Classified ${suggestedLevelCode} by the §8.2 sensitivity floor (${kwFloor === "SECRET" ? "credentials / classified / enforcement" : "non-personal sensitive / special category"}); AI classification layer unavailable.`
+            : `Classified ${suggestedLevelCode} by rule (framework default floor); AI classification layer unavailable.`;
           itemRationaleAr = "";
-          itemSourceLayers = ["rule_floor"];
+          itemSourceLayers = [...(kwFloor ? ["sensitivity_keyword"] : []), "rule_floor"];
         }
       }
 
@@ -527,12 +547,14 @@ async function processRun(
           ? { piiName: attr.piiName, cdeFlag: attr.cdeFlag, columnDataClassification: attr.columnDataClassification }
           : { columnDataClassification: attr.columnDataClassification };
 
-      const autoAccept =
+      const autoAcceptBase =
         ctx.engineType === "classification"
           ? classConfidence !== null
             ? classConfidence >= ctx.threshold
             : inference.confidence >= ctx.threshold && inference.verdict !== "uncertain"
           : inference.confidence >= ctx.threshold && inference.verdict !== "uncertain";
+      // §8.2 SECRET is the severe-impact tier — never auto-accept it; always send for a human decision.
+      const autoAccept = autoAcceptBase && !(ctx.engineType === "classification" && suggestedLevelCode === "SECRET");
 
       const [item] = await db
         .insert(runItems)

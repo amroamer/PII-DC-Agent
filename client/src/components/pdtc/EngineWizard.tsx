@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowUp, ChevronRight, Info, TriangleAlert } from "lucide-react";
@@ -225,9 +225,27 @@ export function EngineWizard({
   const countQuery = useQuery<{ total: number }>({ queryKey: [countUrl], enabled: countUrl !== null });
   const scopeCount = scopeMode === "selected" ? selectedCount : countQuery.data?.total ?? 0;
 
-  const aiQuery = useQuery<{ maxBatchSize: number }>({ queryKey: ["/api/settings/ai"] });
+  const aiQuery = useQuery<{ maxBatchSize: number; batchSize: number; selfConsistencySamples: number }>({
+    queryKey: ["/api/settings/ai"],
+  });
   const maxBatch = aiQuery.data?.maxBatchSize ?? 5000;
   const overLimit = scopeCount > maxBatch;
+
+  // Seed the per-run batch size & self-consistency defaults from the saved AI settings ONCE, when
+  // they first load. The steward can still override either per run below; we don't re-apply on
+  // refetch so a manual edit is never clobbered.
+  const seededAiDefaults = useRef(false);
+  useEffect(() => {
+    if (seededAiDefaults.current || !aiQuery.data) return;
+    seededAiDefaults.current = true;
+    setParams((p) => ({
+      ...p,
+      ...(typeof aiQuery.data.batchSize === "number" ? { batchSize: aiQuery.data.batchSize } : {}),
+      ...(typeof aiQuery.data.selfConsistencySamples === "number"
+        ? { selfConsistencySamples: aiQuery.data.selfConsistencySamples }
+        : {}),
+    }));
+  }, [aiQuery.data]);
 
   const runMutation = useMutation({
     mutationFn: () => apiRequest<{ id: number }>("POST", "/api/engine-runs", { engineType, screen, selection: effectiveSelection, params }),
