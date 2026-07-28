@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Bot, ChevronDown, ChevronRight, ChevronUp, FileCog, Plus, ScrollText, SlidersHorizontal, ShieldCheck, Trash2 } from "lucide-react";
+import { ArrowRight, Bot, ChevronDown, ChevronRight, ChevronUp, FileCog, GripVertical, Info, Plus, ScrollText, Search, SlidersHorizontal, ShieldCheck, Trash2 } from "lucide-react";
 import { CRITERION_CODES } from "@shared/lib/criteria";
 import { CLASSIFICATION_CODES } from "@shared/lib/classification";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Btn } from "@/components/pdtc/Btn";
 import { Alert } from "@/components/pdtc/Alert";
 import { DataTable, type Column } from "@/components/pdtc/DataTable";
@@ -188,6 +189,7 @@ function FrameworkEditor({ type }: { type: "pii" | "classification" }) {
   const [jsonDraft, setJsonDraft] = useState("");
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const historyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (active.data) { setDef(active.data.definition); setError(null); }
@@ -237,44 +239,51 @@ function FrameworkEditor({ type }: { type: "pii" | "classification" }) {
   ];
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader className="flex-row items-center justify-between">
-          <CardTitle className="flex items-center gap-2 text-base"><ScrollText className="h-4 w-4" /> {type === "pii" ? "PII Framework" : "Classification Framework"}</CardTitle>
-          <Badge variant="secondary">{active.data?.version}</Badge>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <Alert tone="warning" title="Every save creates a new immutable version.">
-            Approved runs stay pinned to the version they used; staged runs referencing the previous version should be re-run.
-          </Alert>
-          <div className="flex justify-end">
-            <button type="button" className="text-xs text-primary underline" onClick={mode === "structured" ? enterJson : enterStructured}>
-              {mode === "structured" ? "Advanced (raw JSON)" : "Back to form"}
+    <TooltipProvider>
+      <div className="space-y-4">
+        <Card>
+          <CardHeader className="flex-row items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-base"><ScrollText className="h-4 w-4" /> {type === "pii" ? "PII Framework" : "Classification Framework"}</CardTitle>
+            <button type="button" onClick={() => historyRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })} title="Jump to version history">
+              <Badge variant="secondary" className="cursor-pointer gap-1 hover:bg-secondary/70">{active.data?.version} · {(versions.data ?? []).length} versions</Badge>
             </button>
-          </div>
-          {mode === "structured" && def ? (
-            type === "pii"
-              ? <PiiEditor def={def} onChange={setDef} />
-              : <ClassificationEditor def={def} onChange={setDef} />
-          ) : (
-            <Textarea value={jsonDraft} onChange={(e) => setJsonDraft(e.target.value)} rows={18} className="font-mono text-xs" />
-          )}
-          {error && <p className="text-sm text-destructive">{error}</p>}
-          <div className="flex items-center gap-2">
-            <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Change note" className="max-w-xs" />
-            <Btn loading={saveMutation.isPending} onClick={onSave}>Save new version</Btn>
-            <a className="text-sm text-primary underline" href={`/api/frameworks/${type}/export`}>Export JSON</a>
-          </div>
-        </CardContent>
-      </Card>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Alert tone="warning" title="Every save creates a new immutable version.">
+              Approved runs stay pinned to the version they used; staged runs referencing the previous version should be re-run. <InfoTip text={GLOSSARY.immutable} />
+            </Alert>
+            <div className="flex justify-end">
+              <button type="button" className="text-xs text-primary underline" onClick={mode === "structured" ? enterJson : enterStructured}>
+                {mode === "structured" ? "Advanced (raw JSON)" : "Back to form"}
+              </button>
+            </div>
+            {mode === "structured" && def ? (
+              type === "pii"
+                ? <PiiEditor def={def} onChange={setDef} />
+                : <ClassificationEditor def={def} onChange={setDef} />
+            ) : (
+              <Textarea value={jsonDraft} onChange={(e) => setJsonDraft(e.target.value)} rows={18} className="font-mono text-xs" />
+            )}
+            {error && <p className="text-sm text-destructive">{error}</p>}
+            {/* Sticky save bar — always reachable while scrolling a long framework. */}
+            <div className="sticky bottom-0 -mx-6 -mb-6 flex items-center gap-2 border-t bg-background/95 px-6 py-3 backdrop-blur">
+              <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Change note" className="max-w-xs" />
+              <Btn loading={saveMutation.isPending} onClick={onSave}>Save new version</Btn>
+              <a className="text-sm text-primary underline" href={`/api/frameworks/${type}/export`}>Export JSON</a>
+            </div>
+          </CardContent>
+        </Card>
 
-      <Card>
-        <CardHeader><CardTitle className="text-base">Version history</CardTitle></CardHeader>
-        <CardContent>
-          <DataTable columns={versionColumns} rows={versions.data ?? []} getRowKey={(r) => r.id} loading={versions.isLoading} />
-        </CardContent>
-      </Card>
-    </div>
+        <div ref={historyRef}>
+          <Card>
+            <CardHeader><CardTitle className="text-base">Version history</CardTitle></CardHeader>
+            <CardContent>
+              <DataTable columns={versionColumns} rows={versions.data ?? []} getRowKey={(r) => r.id} loading={versions.isLoading} />
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </TooltipProvider>
   );
 }
 
@@ -352,29 +361,175 @@ function ruleSentence(r: any): string {
   return `When ${conds.length ? conds.join(" and ") : "any data"}`;
 }
 
+/** Canonical example columns per criterion, shown inline so editors grasp scope at a glance. */
+const CRITERION_EXAMPLES: Record<string, string[]> = {
+  DIRECT_ID: ["FULL_NAME", "EMIRATES_ID", "PASSPORT_NO"],
+  INDIRECT_ID: ["DATE_OF_BIRTH", "MOBILE_NO", "EMAIL", "PLATE_NO"],
+  REGULATORY: ["TAX_ID", "TRADE_LICENSE_NO"],
+  CONTEXTUAL: ["REMARKS", "NOTES", "FREE_TEXT"],
+  SPECIAL_CATEGORY: ["RELIGION", "HEALTH_STATUS", "PHOTO", "FINGERPRINT"],
+};
+
+/** colorToken → Tailwind classes (mirrors ClassificationBadge) for level chips/swatches. */
+const LEVEL_TOKEN_CLASS: Record<string, string> = {
+  success: "bg-success/15 text-success border-success/30",
+  muted: "bg-muted text-muted-foreground border-border",
+  info: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/30",
+  warning: "bg-warning/15 text-warning border-warning/30",
+  destructive: "bg-destructive/15 text-destructive border-destructive/30",
+};
+
+/** Plain-language glossary for the jargon tooltips. */
+const GLOSSARY: Record<string, string> = {
+  intrinsic: "Decidable from the column's own metadata (name/description) — the deterministic layers can resolve it without the AI.",
+  contextual: "Needs semantic judgement or surrounding context — the AI layer weighs in.",
+  firstMatch: "Rules are checked top to bottom; the FIRST rule whose conditions all match sets the level. Order matters — drag to change it.",
+  rollup: "A table's level = its most sensitive column's level (high-water-mark).",
+  immutable: "Saving never edits the current version — it creates a new one. Past approved runs stay pinned to the version they used.",
+  special: "Special categories (health, biometric, religion, ethnicity) that warrant stricter handling.",
+};
+
+/** Info (i) tooltip trigger. The screen is wrapped in <TooltipProvider>. */
+function InfoTip({ text }: { text: string }) {
+  return (
+    <Tooltip delayDuration={150}>
+      <TooltipTrigger asChild>
+        <button type="button" tabIndex={-1} className="inline-flex align-middle text-muted-foreground hover:text-foreground"><Info className="h-3.5 w-3.5" /></button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs text-start leading-relaxed">{text}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** Visual pipeline: how a column flows through both frameworks; the current stage is highlighted. */
+function Pipeline({ type }: { type: "pii" | "classification" }) {
+  const { lang } = useLanguage();
+  const stages: { label: string; on: "pii" | "classification" | null }[] = [
+    { label: lang === "ar" ? "بيانات العمود" : "Column metadata", on: null },
+    { label: lang === "ar" ? "معايير PII" : "PII criteria", on: "pii" },
+    { label: lang === "ar" ? "الحكم + السبب" : "Verdict + reason", on: null },
+    { label: lang === "ar" ? "قواعد التصنيف" : "Classification rules", on: "classification" },
+    { label: lang === "ar" ? "المستوى" : "Level", on: null },
+    { label: lang === "ar" ? "تجميع الجدول" : "Table roll-up", on: "classification" },
+  ];
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 rounded-md border bg-muted/20 p-3">
+      {stages.map((s, i) => (
+        <Fragment key={s.label}>
+          <span className={cn("rounded px-2 py-1 text-xs", s.on === type ? "bg-primary font-medium text-primary-foreground" : "border bg-background text-muted-foreground")}>{s.label}</span>
+          {i < stages.length - 1 && <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground" />}
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+/** A classification level rendered with its configured colour (or a red "gap" when no rule matches). */
+function LevelChip({ levels, code }: { levels: any[]; code: string | null }) {
+  if (!code) return <span className="text-[11px] font-medium text-destructive">— gap</span>;
+  const lvl = levels.find((l) => l.code === code);
+  return (
+    <span className={cn("inline-flex items-center rounded border px-1.5 py-0.5 text-[11px] font-medium", LEVEL_TOKEN_CLASS[lvl?.colorToken ?? "muted"] ?? LEVEL_TOKEN_CLASS.muted)}>
+      {lvl?.labelEn ?? code}
+    </span>
+  );
+}
+
+/** Evaluate the rule list (top-down, first match wins) for one input. */
+function classifyByRules(rules: any[], ctx: { verdict: string; criterion: string | null; special: boolean }): string | null {
+  for (const r of rules) {
+    if (r.isSpecialCategory !== undefined && r.isSpecialCategory !== ctx.special) continue;
+    if (r.criterion && r.criterion !== ctx.criterion) continue;
+    if (r.verdict && r.verdict !== ctx.verdict) continue;
+    return r.level ?? null;
+  }
+  return null;
+}
+
+/** Truth-table: every criterion × verdict → the level the current rules produce. Reveals gaps at a glance. */
+function TruthTable({ rules, levels }: { rules: any[]; levels: any[] }) {
+  const verdicts = ["pii", "uncertain", "not_pii"];
+  const rows: { label: string; criterion: string | null; special: boolean }[] = [
+    ...CRITERION_CODES.map((c) => ({ label: c as string, criterion: c as string, special: c === "SPECIAL_CATEGORY" })),
+    { label: "(no criterion)", criterion: null, special: false },
+  ];
+  return (
+    <div className="overflow-x-auto rounded-md border">
+      <table className="w-full text-xs">
+        <thead className="bg-muted/40 text-muted-foreground">
+          <tr>
+            <th className="p-2 text-start font-medium">Criterion \ Verdict</th>
+            {verdicts.map((v) => <th key={v} className="p-2 text-start font-medium">{v}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.label} className="border-t">
+              <td className="whitespace-nowrap p-2 font-mono">{row.label}{row.special ? " *" : ""}</td>
+              {verdicts.map((v) => (
+                <td key={v} className="p-2"><LevelChip levels={levels} code={classifyByRules(rules, { verdict: v, criterion: row.criterion, special: row.special })} /></td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function PiiEditor({ def, onChange }: { def: Definition; onChange: (d: Definition) => void }) {
-  const [open, setOpen] = useState<string | null>(null);
+  const [open, setOpen] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
   const criteria: any[] = Array.isArray(def.criteria) ? def.criteria : [];
   const patchCrit = (i: number, patch: Record<string, unknown>) =>
     onChange({ ...def, criteria: criteria.map((c, idx) => (idx === i ? { ...c, ...patch } : c)) });
+  const keyOf = (c: any, i: number) => c.code ?? String(i);
+  const toggle = (k: string) => setOpen((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+  const q = search.trim().toLowerCase();
+  const shown = criteria.map((c, i) => ({ c, i })).filter(({ c }) => !q || `${c.code} ${c.nameEn} ${c.nameAr} ${c.description}`.toLowerCase().includes(q));
 
   return (
     <div className="space-y-4">
+      <Pipeline type="pii" />
       <FlowHint type="pii" />
 
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative">
+          <Search className="pointer-events-none absolute start-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search criteria…" className="h-8 w-52 ps-7 text-xs" />
+        </div>
+        <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => setOpen(new Set(criteria.map(keyOf)))}>Expand all</button>
+        <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => setOpen(new Set())}>Collapse all</button>
+        <span className="ms-auto text-xs text-muted-foreground">{shown.length}/{criteria.length}</span>
+      </div>
+
       <div className="space-y-2">
-        {criteria.map((c, i) => {
-          const key = c.code ?? String(i);
+        {shown.map(({ c, i }) => {
+          const key = keyOf(c, i);
+          const examples = CRITERION_EXAMPLES[c.code] ?? [];
           return (
             <AccordionRow
               key={key}
-              open={open === key}
-              onToggle={() => setOpen(open === key ? null : key)}
+              open={open.has(key)}
+              onToggle={() => toggle(key)}
               summary={
-                <div className="flex items-center gap-3">
-                  <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{c.code}</span>
-                  <span className="truncate font-medium">{c.nameEn}</span>
-                  <Badge variant="outline" className="ms-auto shrink-0 font-normal">{c.evaluationMode ?? "contextual"}</Badge>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-3">
+                    <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{c.code}</span>
+                    <span className="truncate font-medium">{c.nameEn}</span>
+                    <span className="ms-auto inline-flex shrink-0 items-center gap-1">
+                      <Badge variant="outline" className="font-normal">{c.evaluationMode ?? "contextual"}</Badge>
+                      <InfoTip text={c.evaluationMode === "intrinsic" ? GLOSSARY.intrinsic : GLOSSARY.contextual} />
+                    </span>
+                  </div>
+                  {/* Inline preview — the AI guidance + example columns, visible without expanding. */}
+                  {c.description && <p className="line-clamp-2 pe-6 text-xs font-normal text-muted-foreground">{c.description}</p>}
+                  {examples.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">e.g.</span>
+                      {examples.map((ex) => <span key={ex} className="rounded bg-accent px-1 py-0.5 font-mono text-[10px] text-muted-foreground">{ex}</span>)}
+                    </div>
+                  )}
                 </div>
               }
             >
@@ -392,7 +547,7 @@ function PiiEditor({ def, onChange }: { def: Definition; onChange: (d: Definitio
                   <Textarea className="min-h-[140px] resize-y" value={c.description ?? ""} onChange={(e) => patchCrit(i, { description: e.target.value })} />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Evaluation mode</Label>
+                  <Label className="flex items-center gap-1 text-xs text-muted-foreground">Evaluation mode <InfoTip text={`intrinsic — ${GLOSSARY.intrinsic}  ·  contextual — ${GLOSSARY.contextual}`} /></Label>
                   <Sel className="w-48" value={c.evaluationMode ?? "contextual"} onChange={(v) => patchCrit(i, { evaluationMode: v })}
                     options={[{ value: "intrinsic", label: "intrinsic" }, { value: "contextual", label: "contextual" }]} />
                 </div>
@@ -401,13 +556,14 @@ function PiiEditor({ def, onChange }: { def: Definition; onChange: (d: Definitio
           );
         })}
       </div>
-
     </div>
   );
 }
 
 function ClassificationEditor({ def, onChange }: { def: Definition; onChange: (d: Definition) => void }) {
-  const [open, setOpen] = useState<string | null>(null);
+  const [open, setOpen] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
   const levels: any[] = Array.isArray(def.levels) ? def.levels : [];
   const rules: any[] = Array.isArray(def.rules) ? def.rules : [];
   const ANY = "";
@@ -429,19 +585,41 @@ function ClassificationEditor({ def, onChange }: { def: Definition; onChange: (d
     [next[i], next[j]] = [next[j], next[i]];
     setRules(next);
   };
+  const reorder = (from: number, to: number) => {
+    if (from === to || from < 0 || to < 0) return;
+    const next = rules.slice();
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    setRules(next);
+  };
   const setOpt = (i: number, key: string, v: string) => {
     const r = { ...rules[i] };
     if (v === ANY) delete r[key];
     else r[key] = key === "isSpecialCategory" ? v === "true" : v;
     setRules(rules.map((x, idx) => (idx === i ? r : x)));
   };
+  const keyOf = (r: any, i: number) => r.id ?? String(i);
+  const toggle = (k: string) => setOpen((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+  const q = search.trim().toLowerCase();
+  const shownRules = rules.map((r, i) => ({ r, i })).filter(({ r }) => !q || `${ruleSentence(r)} ${r.level} ${r.note}`.toLowerCase().includes(q));
+  const canDrag = !q; // dragging only makes sense over the full ordered list
 
   return (
     <div className="space-y-5">
+      <Pipeline type="classification" />
       <FlowHint type="classification" />
 
       <div>
         <p className="mb-2 text-sm font-medium">Confidentiality levels <span className="font-normal text-muted-foreground">(least → most sensitive)</span></p>
+        {/* Colour ladder — the levels at a glance, in rank order. */}
+        <div className="mb-3 flex flex-wrap items-center gap-1.5">
+          {[...levels].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0)).map((l, i, arr) => (
+            <Fragment key={l.code ?? i}>
+              <span className={cn("rounded-md border px-2 py-1 text-xs font-medium", LEVEL_TOKEN_CLASS[l.colorToken ?? "muted"] ?? LEVEL_TOKEN_CLASS.muted)}>{l.labelEn ?? l.code}</span>
+              {i < arr.length - 1 && <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground" />}
+            </Fragment>
+          ))}
+        </div>
         <div className="overflow-x-auto rounded-md border">
           <table className="w-full text-sm">
             <thead className="bg-muted/40 text-xs text-muted-foreground">
@@ -460,7 +638,12 @@ function ClassificationEditor({ def, onChange }: { def: Definition; onChange: (d
                   <td className="p-3 font-mono text-xs">{l.code}</td>
                   <td className="p-3"><Input value={l.labelEn ?? ""} onChange={(e) => patchLevel(i, { labelEn: e.target.value })} /></td>
                   <td className="p-3"><Input dir="rtl" value={l.labelAr ?? ""} onChange={(e) => patchLevel(i, { labelAr: e.target.value })} /></td>
-                  <td className="w-40 p-3"><Sel value={l.colorToken ?? "muted"} onChange={(v) => patchLevel(i, { colorToken: v })} options={colorOptions} /></td>
+                  <td className="w-52 p-3">
+                    <div className="flex items-center gap-2">
+                      <span className={cn("h-5 w-5 shrink-0 rounded border", LEVEL_TOKEN_CLASS[l.colorToken ?? "muted"] ?? LEVEL_TOKEN_CLASS.muted)} />
+                      <Sel value={l.colorToken ?? "muted"} onChange={(v) => patchLevel(i, { colorToken: v })} options={colorOptions} />
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -469,58 +652,76 @@ function ClassificationEditor({ def, onChange }: { def: Definition; onChange: (d
       </div>
 
       <div>
-        <p className="mb-2 text-sm font-medium">Rules <span className="font-normal text-muted-foreground">(top-down, first match wins)</span></p>
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <p className="flex items-center gap-1 text-sm font-medium">Rules <span className="font-normal text-muted-foreground">(top-down, first match wins)</span><InfoTip text={GLOSSARY.firstMatch} /></p>
+          <div className="relative ms-auto">
+            <Search className="pointer-events-none absolute start-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search rules…" className="h-8 w-44 ps-7 text-xs" />
+          </div>
+          <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => setOpen(new Set(rules.map(keyOf)))}>Expand all</button>
+          <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => setOpen(new Set())}>Collapse all</button>
+        </div>
+        {canDrag && rules.length > 1 && <p className="mb-2 text-xs text-muted-foreground">Drag <GripVertical className="inline h-3 w-3" /> to reorder — order is the logic (first match wins).</p>}
         <div className="space-y-2">
-          {rules.map((r, i) => {
-            const key = r.id ?? String(i);
+          {shownRules.map(({ r, i }) => {
+            const key = keyOf(r, i);
             return (
-              <AccordionRow
+              <div
                 key={key}
-                open={open === key}
-                onToggle={() => setOpen(open === key ? null : key)}
-                summary={
-                  <div className="flex flex-wrap items-center gap-2 text-sm">
-                    <span className="text-xs text-muted-foreground">{i + 1}.</span>
-                    <span>{ruleSentence(r)}</span>
-                    <span className="text-muted-foreground">→</span>
-                    <Badge variant="secondary">{r.level}</Badge>
-                  </div>
-                }
-                actions={
-                  <>
-                    <button type="button" className="p-1 text-muted-foreground disabled:opacity-30" disabled={i === 0} onClick={() => move(i, -1)}><ChevronUp className="h-4 w-4" /></button>
-                    <button type="button" className="p-1 text-muted-foreground disabled:opacity-30" disabled={i === rules.length - 1} onClick={() => move(i, 1)}><ChevronDown className="h-4 w-4" /></button>
-                    <Button size="icon" variant="ghost" onClick={() => setRules(rules.filter((_, idx) => idx !== i))}><Trash2 className="h-4 w-4" /></Button>
-                  </>
-                }
+                draggable={canDrag}
+                onDragStart={() => canDrag && setDragIdx(i)}
+                onDragOver={(e) => { if (canDrag && dragIdx !== null) e.preventDefault(); }}
+                onDrop={(e) => { if (canDrag && dragIdx !== null) { e.preventDefault(); reorder(dragIdx, i); setDragIdx(null); } }}
+                className={cn(dragIdx === i && "opacity-50")}
               >
-                <div className="space-y-3">
-                  <div className="flex flex-wrap items-end gap-3">
-                    <span className="pb-2 text-sm text-muted-foreground">When</span>
-                    <div className="space-y-1">
-                      <Label className="text-xs text-muted-foreground">Data</Label>
-                      <Sel className="w-52" value={r.isSpecialCategory === undefined ? ANY : String(r.isSpecialCategory)} onChange={(v) => setOpt(i, "isSpecialCategory", v)} options={specialOptions} />
+                <AccordionRow
+                  open={open.has(key)}
+                  onToggle={() => toggle(key)}
+                  summary={
+                    <div className="flex flex-wrap items-center gap-2 text-sm">
+                      {canDrag && <GripVertical className="h-4 w-4 shrink-0 cursor-grab text-muted-foreground" />}
+                      <span className="text-xs text-muted-foreground">{i + 1}.</span>
+                      <span>{ruleSentence(r)}</span>
+                      <span className="text-muted-foreground">→</span>
+                      <LevelChip levels={levels} code={r.level} />
+                    </div>
+                  }
+                  actions={
+                    <>
+                      <button type="button" className="p-1 text-muted-foreground disabled:opacity-30" disabled={i === 0} onClick={() => move(i, -1)}><ChevronUp className="h-4 w-4" /></button>
+                      <button type="button" className="p-1 text-muted-foreground disabled:opacity-30" disabled={i === rules.length - 1} onClick={() => move(i, 1)}><ChevronDown className="h-4 w-4" /></button>
+                      <Button size="icon" variant="ghost" onClick={() => setRules(rules.filter((_, idx) => idx !== i))}><Trash2 className="h-4 w-4" /></Button>
+                    </>
+                  }
+                >
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap items-end gap-3">
+                      <span className="pb-2 text-sm text-muted-foreground">When</span>
+                      <div className="space-y-1">
+                        <Label className="flex items-center gap-1 text-xs text-muted-foreground">Data <InfoTip text={GLOSSARY.special} /></Label>
+                        <Sel className="w-52" value={r.isSpecialCategory === undefined ? ANY : String(r.isSpecialCategory)} onChange={(v) => setOpt(i, "isSpecialCategory", v)} options={specialOptions} />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">Criterion</Label>
+                        <Sel className="w-44" value={r.criterion ?? ANY} onChange={(v) => setOpt(i, "criterion", v)} options={critOptions} />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">Verdict</Label>
+                        <Sel className="w-40" value={r.verdict ?? ANY} onChange={(v) => setOpt(i, "verdict", v)} options={verdictOptions} />
+                      </div>
+                      <span className="pb-2 text-sm text-muted-foreground">→ classify as</span>
+                      <div className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">Level</Label>
+                        <Sel className="w-40" value={r.level ?? "CONFIDENTIAL"} onChange={(v) => patchRule(i, { level: v })} options={levelOptions} />
+                      </div>
                     </div>
                     <div className="space-y-1">
-                      <Label className="text-xs text-muted-foreground">Criterion</Label>
-                      <Sel className="w-44" value={r.criterion ?? ANY} onChange={(v) => setOpt(i, "criterion", v)} options={critOptions} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs text-muted-foreground">Verdict</Label>
-                      <Sel className="w-40" value={r.verdict ?? ANY} onChange={(v) => setOpt(i, "verdict", v)} options={verdictOptions} />
-                    </div>
-                    <span className="pb-2 text-sm text-muted-foreground">→ classify as</span>
-                    <div className="space-y-1">
-                      <Label className="text-xs text-muted-foreground">Level</Label>
-                      <Sel className="w-40" value={r.level ?? "CONFIDENTIAL"} onChange={(v) => patchRule(i, { level: v })} options={levelOptions} />
+                      <Label className="text-xs text-muted-foreground">Note <span className="font-normal">(shown as the rationale on classified columns)</span></Label>
+                      <Input value={r.note ?? ""} onChange={(e) => patchRule(i, { note: e.target.value })} />
                     </div>
                   </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">Note <span className="font-normal">(shown as the rationale on classified columns)</span></Label>
-                    <Input value={r.note ?? ""} onChange={(e) => patchRule(i, { note: e.target.value })} />
-                  </div>
-                </div>
-              </AccordionRow>
+                </AccordionRow>
+              </div>
             );
           })}
         </div>
@@ -529,8 +730,14 @@ function ClassificationEditor({ def, onChange }: { def: Definition; onChange: (d
         </Button>
       </div>
 
+      {/* Outcome preview — what the current rules actually produce, gaps included. */}
+      <div>
+        <p className="mb-2 flex items-center gap-1 text-sm font-medium">Outcome preview <span className="font-normal text-muted-foreground">(what these rules produce · * = special-category)</span><InfoTip text="Every criterion × verdict combination and the level your current rules assign it. A red 'gap' means no rule matches — that column would be left unclassified." /></p>
+        <TruthTable rules={rules} levels={levels} />
+      </div>
+
       <div className="space-y-1">
-        <Label className="text-sm font-medium">Roll-up precedence</Label>
+        <Label className="flex items-center gap-1 text-sm font-medium">Roll-up precedence <InfoTip text={GLOSSARY.rollup} /></Label>
         <Input value={def.rollup ?? ""} onChange={(e) => onChange({ ...def, rollup: e.target.value })} />
       </div>
     </div>
