@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { asyncHandler, HttpError, requireAdmin, requireAuth } from "../http";
 import { savedViewSchema, selectionSchema, type User } from "@shared/models/schema";
 import type { CatalogScreen, FilterState } from "@shared/lib/filter-defs";
-import { listAssets, listAttributes, distinctOptions, resolveSelection } from "./query";
+import { listAssets, listAttributes, listScopeTables, distinctOptions, resolveSelection } from "./query";
 import { getAssetKpis, getAttributeKpis, getPiiDensity } from "./kpis";
 import { wipeAllData } from "./wipe";
 import { getAssetDetail, getAttributeDetail } from "./detail";
@@ -92,6 +92,18 @@ export function registerCatalogRoutes(app: Express): void {
         pageSize: req.query.pageSize ? Number(req.query.pageSize) : 50,
       });
       res.json(result);
+    }),
+  );
+
+  // Tables (assets) matching the attribute filters, with per-table attribute counts —
+  // the picklist for the run wizard's "Filter / pick tables" scope. Sort by attribute count.
+  app.get(
+    "/api/catalog/scope-tables",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const sort = req.query.sort === "name" ? "name" : "attributes";
+      const dir = req.query.dir === "asc" ? "asc" : "desc";
+      res.json(await listScopeTables(parseFilters(req.query.filters), sort, dir));
     }),
   );
 

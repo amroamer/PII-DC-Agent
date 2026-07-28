@@ -186,6 +186,43 @@ export async function resolveAssetIds(filters: FilterState): Promise<number[]> {
   return rows.map((r) => r.id);
 }
 
+/**
+ * Tables (assets) that match the given ATTRIBUTE-screen filters, each with the count of
+ * matching attributes — the picklist behind the run wizard's "Filter / pick tables" scope.
+ * The `assetId` filter (which tables are already picked) is ignored so the list itself never
+ * shrinks to the selection. Sorted by attribute count by default (main sort, asc/desc).
+ */
+export async function listScopeTables(
+  filters: FilterState,
+  sort: "attributes" | "name",
+  dir: "asc" | "desc",
+  limit = 500,
+) {
+  const f: FilterState = { ...filters };
+  delete (f as Record<string, unknown>).assetId;
+  const conds = attributeConditions(f);
+  const where = conds.length ? and(...conds) : undefined;
+  const attributeCount = sql<number>`count(${attributes.id})::int`;
+  const analysedCount = sql<number>`count(${attributes.id}) FILTER (WHERE EXISTS (SELECT 1 FROM detections d WHERE d.attribute_id = ${attributes.id}))::int`;
+  const piiCount = sql<number>`count(${attributes.id}) FILTER (WHERE EXISTS (SELECT 1 FROM detections d WHERE d.attribute_id = ${attributes.id} AND d.verdict = 'pii'))::int`;
+  const orderExpr = sort === "name" ? assets.name : sql`count(${attributes.id})`;
+  return db
+    .select({
+      id: assets.id,
+      name: assets.name,
+      businessDomain: assets.businessDomain,
+      attributeCount,
+      analysedCount,
+      piiCount,
+    })
+    .from(attributes)
+    .innerJoin(assets, eq(attributes.assetId, assets.id))
+    .where(where)
+    .groupBy(assets.id, assets.name, assets.businessDomain)
+    .orderBy(dir === "desc" ? desc(orderExpr) : asc(orderExpr), asc(assets.name))
+    .limit(limit);
+}
+
 // --------------------------------------------------------------------------
 // Attributes (joined to parent asset for inherited-context filters)
 // --------------------------------------------------------------------------

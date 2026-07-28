@@ -76,6 +76,14 @@ interface Preview {
   diffs: Array<{ targetId: number; columnName: string; field: string; currentValue: string; newValue: string; source: string }>;
   assetRollups: Array<{ assetId: number; currentLevel: string; newLevel: string; driver: string }>;
 }
+interface ScopeTable {
+  id: number;
+  name: string;
+  businessDomain: string[] | null;
+  attributeCount: number;
+  analysedCount: number;
+  piiCount: number;
+}
 
 /** Plain-language strictness presets → the underlying confidence knobs. */
 const STRICTNESS: Record<"balanced" | "strict" | "lenient", { confidenceThreshold: number; confidenceFloor: number }> = {
@@ -149,6 +157,38 @@ export function EngineWizard({
     initialScope ?? (hasInitialSelection ? "selected" : "all"),
   );
   const [scopeFilters, setScopeFilters] = useState<FilterState>({});
+  const [tableSort, setTableSort] = useState<"attributes" | "name">("attributes");
+  const [tableDir, setTableDir] = useState<"asc" | "desc">("desc");
+  // Picklist of tables for the "filtered" scope. The assetId filter (which tables are already
+  // picked) is stripped from the query so the list never shrinks to the current selection.
+  const tableListFilters = useMemo(() => {
+    const f: FilterState = { ...scopeFilters };
+    delete (f as Record<string, unknown>).assetId;
+    return f;
+  }, [scopeFilters]);
+  const tablesUrl = `/api/catalog/scope-tables?filters=${encodeURIComponent(JSON.stringify(tableListFilters))}&sort=${tableSort}&dir=${tableDir}`;
+  const tablesQuery = useQuery<ScopeTable[]>({ queryKey: [tablesUrl], enabled: scopeMode === "filtered" });
+  const selectedTables = useMemo(() => {
+    const v = scopeFilters.assetId;
+    return new Set(Array.isArray(v) ? (v as string[]) : v ? [String(v)] : []);
+  }, [scopeFilters.assetId]);
+  const toggleTable = (name: string) =>
+    setScopeFilters((f) => {
+      const cur = new Set(Array.isArray(f.assetId) ? (f.assetId as string[]) : f.assetId ? [String(f.assetId)] : []);
+      if (cur.has(name)) cur.delete(name);
+      else cur.add(name);
+      const next: FilterState = { ...f };
+      if (cur.size) (next as Record<string, unknown>).assetId = [...cur];
+      else delete (next as Record<string, unknown>).assetId;
+      return next;
+    });
+  const sortTablesBy = (col: "attributes" | "name") => {
+    if (tableSort === col) setTableDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
+      setTableSort(col);
+      setTableDir(col === "attributes" ? "desc" : "asc");
+    }
+  };
 
   const effectiveSelection: Selection =
     scopeMode === "selected"
@@ -367,6 +407,62 @@ export function EngineWizard({
                         })}
                         flat
                       />
+
+                      {/* Table picklist — sorted by attribute count (main sort). Checking a table
+                          adds it to the assetId scope filter; the list itself ignores that filter. */}
+                      <div className="rounded-md border">
+                        <div className="flex items-center gap-2 border-b bg-muted/30 px-2 py-1.5 text-xs">
+                          <span className="font-medium">{lang === "ar" ? "الجداول" : "Tables"}</span>
+                          <span className="text-muted-foreground">{(tablesQuery.data?.length ?? 0).toLocaleString()}</span>
+                          {selectedTables.size > 0 && <span className="text-primary">· {selectedTables.size} {lang === "ar" ? "محدد" : "selected"}</span>}
+                          <div className="ms-auto flex items-center gap-3">
+                            {selectedTables.size > 0 && (
+                              <button type="button" className="text-muted-foreground underline hover:text-foreground" onClick={() => setScopeFilters((f) => { const n = { ...f }; delete (n as Record<string, unknown>).assetId; return n; })}>
+                                {lang === "ar" ? "مسح التحديد" : "Clear selection"}
+                              </button>
+                            )}
+                            <button type="button" className="underline hover:text-foreground" onClick={() => setScopeFilters((f) => ({ ...f, assetId: (tablesQuery.data ?? []).map((t) => t.name) }))}>
+                              {lang === "ar" ? "تحديد كل المعروض" : "Select all shown"}
+                            </button>
+                          </div>
+                        </div>
+                        <div className="max-h-64 overflow-y-auto">
+                          <table className="w-full text-xs">
+                            <thead className="sticky top-0 bg-background text-muted-foreground">
+                              <tr className="border-b">
+                                <th className="w-8 p-1.5" />
+                                <th className="cursor-pointer select-none p-1.5 text-start hover:text-foreground" onClick={() => sortTablesBy("name")}>
+                                  {lang === "ar" ? "الجدول" : "Table"}{tableSort === "name" ? (tableDir === "asc" ? " ↑" : " ↓") : ""}
+                                </th>
+                                <th className="cursor-pointer select-none p-1.5 text-end hover:text-foreground" onClick={() => sortTablesBy("attributes")}>
+                                  {lang === "ar" ? "الأعمدة" : "Columns"}{tableSort === "attributes" ? (tableDir === "asc" ? " ↑" : " ↓") : ""}
+                                </th>
+                                <th className="p-1.5 text-end">PII/{lang === "ar" ? "محلَّل" : "Analysed"}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(tablesQuery.data ?? []).map((t) => (
+                                <tr key={t.id} className="cursor-pointer border-b hover:bg-muted/40" onClick={() => toggleTable(t.name)}>
+                                  <td className="p-1.5"><Checkbox checked={selectedTables.has(t.name)} className="pointer-events-none" /></td>
+                                  <td className="p-1.5">
+                                    <span className="font-medium">{t.name}</span>
+                                    {t.businessDomain && t.businessDomain.length > 0 && <span className="ms-1 text-muted-foreground">· {t.businessDomain.join(", ")}</span>}
+                                  </td>
+                                  <td className="p-1.5 text-end tabular-nums">{t.attributeCount.toLocaleString()}</td>
+                                  <td className="p-1.5 text-end tabular-nums text-muted-foreground">{t.piiCount}/{t.analysedCount}</td>
+                                </tr>
+                              ))}
+                              {tablesQuery.isLoading && <tr><td colSpan={4} className="p-4 text-center text-muted-foreground">…</td></tr>}
+                              {!tablesQuery.isLoading && (tablesQuery.data?.length ?? 0) === 0 && (
+                                <tr><td colSpan={4} className="p-4 text-center text-muted-foreground">{lang === "ar" ? "لا توجد جداول مطابقة" : "No matching tables"}</td></tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                        {(tablesQuery.data?.length ?? 0) >= 500 && (
+                          <p className="border-t px-2 py-1 text-[11px] text-muted-foreground">{lang === "ar" ? "عرض أول 500 — ضيّق بالفلاتر أعلاه" : "Showing first 500 — narrow with the filters above"}</p>
+                        )}
+                      </div>
                     </div>
                   )}
                   {overLimit && (
