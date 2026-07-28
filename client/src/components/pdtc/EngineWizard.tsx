@@ -56,6 +56,10 @@ interface RunItem {
   targetId: number;
   columnName: string | null;
   assetName: string | null;
+  assetDescriptionEn: string | null;
+  assetDescriptionAr: string | null;
+  columnDescriptionEn: string | null;
+  columnDescriptionAr: string | null;
   verdict: string | null;
   suggestedClassCode: string | null;
   suggestedLevelCode: string | null;
@@ -344,18 +348,19 @@ export function EngineWizard({
   }, [filteredItems, sortKey, sortDir]);
 
   // Flatten into virtual rows: group headers + item rows (collapsed groups contribute only a header).
-  type VRow = { type: "group"; asset: string; count: number; pii: number; uncertain: number } | { type: "item"; item: RunItem };
+  type VRow = { type: "group"; asset: string; desc: string | null; count: number; pii: number; uncertain: number } | { type: "item"; item: RunItem };
   const vrows = useMemo<VRow[]>(() => {
     if (!groupByTable) return sortedItems.map((item) => ({ type: "item", item }));
     const groups = new Map<string, RunItem[]>();
     for (const it of sortedItems) { const k = it.assetName ?? "—"; const list = groups.get(k) ?? []; list.push(it); groups.set(k, list); }
     const out: VRow[] = [];
     for (const [asset, list] of groups) {
-      out.push({ type: "group", asset, count: list.length, pii: list.filter((i) => i.verdict === "pii").length, uncertain: list.filter((i) => i.verdict === "uncertain").length });
+      const desc = (lang === "ar" ? list[0]?.assetDescriptionAr : list[0]?.assetDescriptionEn) ?? null;
+      out.push({ type: "group", asset, desc, count: list.length, pii: list.filter((i) => i.verdict === "pii").length, uncertain: list.filter((i) => i.verdict === "uncertain").length });
       if (!collapsedGroups.has(asset)) for (const item of list) out.push({ type: "item", item });
     }
     return out;
-  }, [sortedItems, groupByTable, collapsedGroups]);
+  }, [sortedItems, groupByTable, collapsedGroups, lang]);
 
   const listRef = useRef<HTMLDivElement>(null);
   const rowVirtualizer = useVirtualizer({
@@ -738,7 +743,7 @@ export function EngineWizard({
                             return (
                               <div key={v.key} data-index={v.index} ref={rowVirtualizer.measureElement} style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${v.start}px)` }}>
                                 {row.type === "group" ? (
-                                  <GroupHeader asset={row.asset} count={row.count} pii={row.pii} uncertain={row.uncertain} collapsed={collapsedGroups.has(row.asset)} onToggle={() => toggleGroup(row.asset)} lang={lang} />
+                                  <GroupHeader asset={row.asset} desc={row.desc} count={row.count} pii={row.pii} uncertain={row.uncertain} collapsed={collapsedGroups.has(row.asset)} onToggle={() => toggleGroup(row.asset)} lang={lang} />
                                 ) : (
                                   <ResultRow item={row.item} engineType={engineType} lang={lang} open={openRows.has(row.item.id)} onToggleOpen={() => toggleRow(row.item.id)} onDecision={(d, ov) => patchItem.mutate({ itemId: row.item.id, decision: d, override: ov })} />
                                 )}
@@ -848,14 +853,17 @@ function SortTh({ label, col, sortKey, sortDir, onSort }: { label: string; col: 
 }
 
 /** Collapsible per-table section header (group-by-table) with a mini PII/uncertain summary. */
-function GroupHeader({ asset, count, pii, uncertain, collapsed, onToggle, lang }: { asset: string; count: number; pii: number; uncertain: number; collapsed: boolean; onToggle: () => void; lang: string }) {
+function GroupHeader({ asset, desc, count, pii, uncertain, collapsed, onToggle, lang }: { asset: string; desc: string | null; count: number; pii: number; uncertain: number; collapsed: boolean; onToggle: () => void; lang: string }) {
   return (
-    <button type="button" onClick={onToggle} className="flex w-full items-center gap-2 border-b bg-muted/40 px-2 py-2 text-start text-xs font-semibold hover:bg-muted/60">
-      <ChevronRight className={cn("h-3 w-3 shrink-0 transition", !collapsed && "rotate-90")} />
-      <span className="truncate">{asset}</span>
-      <span className="font-normal text-muted-foreground">· {count} {lang === "ar" ? "عمود" : "cols"}</span>
-      {pii > 0 && <span className="rounded bg-primary/15 px-1 text-primary">{pii} PII</span>}
-      {uncertain > 0 && <span className="rounded bg-warning/15 px-1 text-warning">{uncertain} {lang === "ar" ? "غير مؤكد" : "uncertain"}</span>}
+    <button type="button" onClick={onToggle} className="flex w-full flex-col gap-0.5 border-b bg-muted/40 px-2 py-2 text-start text-xs font-semibold hover:bg-muted/60">
+      <div className="flex w-full items-center gap-2">
+        <ChevronRight className={cn("h-3 w-3 shrink-0 transition", !collapsed && "rotate-90")} />
+        <span className="truncate">{asset}</span>
+        <span className="font-normal text-muted-foreground">· {count} {lang === "ar" ? "عمود" : "cols"}</span>
+        {pii > 0 && <span className="rounded bg-primary/15 px-1 text-primary">{pii} PII</span>}
+        {uncertain > 0 && <span className="rounded bg-warning/15 px-1 text-warning">{uncertain} {lang === "ar" ? "غير مؤكد" : "uncertain"}</span>}
+      </div>
+      {desc && <span className="ms-5 line-clamp-2 font-normal text-muted-foreground" dir={lang === "ar" ? "rtl" : "ltr"}>{desc}</span>}
     </button>
   );
 }
@@ -924,6 +932,12 @@ function ResultRow({ item, engineType, lang, onDecision, open, onToggleOpen }: {
 
       {open && (
         <div className="space-y-2 border-t bg-muted/20 p-3">
+          {(lang === "ar" ? item.columnDescriptionAr : item.columnDescriptionEn) && (
+            <p className="text-xs" dir={lang === "ar" ? "rtl" : "ltr"}>
+              <span className="font-medium">{lang === "ar" ? "وصف العمود" : "Column description"}: </span>
+              {lang === "ar" ? item.columnDescriptionAr : item.columnDescriptionEn}
+            </p>
+          )}
           {engineType === "pii" ? (
             <div className="overflow-x-auto">
               <table className="w-full text-xs">

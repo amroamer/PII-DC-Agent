@@ -666,10 +666,15 @@ export async function getRunItems(runId: number, filter?: { decision?: string; s
     .filter((i) => !filter?.decision || i.stewardDecision === filter.decision)
     .map((i) => {
       const attr = attrMap.get(i.targetId);
+      const asset = attr ? assetMap.get(attr.assetId) : undefined;
       return {
         ...i,
         columnName: attr?.columnName ?? null,
-        assetName: attr ? assetMap.get(attr.assetId)?.name ?? null : null,
+        assetName: asset?.name ?? null,
+        assetDescriptionEn: asset?.descriptionEn ?? null,
+        assetDescriptionAr: asset?.descriptionAr ?? null,
+        columnDescriptionEn: attr?.descriptionEn ?? null,
+        columnDescriptionAr: attr?.descriptionAr ?? null,
         assessments: byItem.get(i.id) ?? [],
         priority: runItemPriority(i, threshold),
       };
