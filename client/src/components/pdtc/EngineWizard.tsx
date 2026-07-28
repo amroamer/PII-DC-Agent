@@ -118,7 +118,7 @@ export function EngineWizard({
   const [unlocked, setUnlocked] = useState(0);
   const [runId, setRunId] = useState<number | null>(null);
   const [justification, setJustification] = useState("");
-  const [onlyUncertain, setOnlyUncertain] = useState(false);
+  const [verdictFilter, setVerdictFilter] = useState<"all" | "pii" | "not_pii" | "uncertain">("all");
   const [onlyConflicts, setOnlyConflicts] = useState(false);
   const [sortBy, setSortBy] = useState<"default" | "priority" | "confidence">("default");
   const [params, setParams] = useState({
@@ -276,11 +276,11 @@ export function EngineWizard({
 
   const items = itemsQuery.data ?? [];
   const visibleItems = useMemo(() => {
-    const filtered = items.filter((i) => (!onlyUncertain || i.verdict === "uncertain") && (!onlyConflicts || i.conflict));
+    const filtered = items.filter((i) => (verdictFilter === "all" || i.verdict === verdictFilter) && (!onlyConflicts || i.conflict));
     if (sortBy === "priority") return [...filtered].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || a.confidence - b.confidence);
     if (sortBy === "confidence") return [...filtered].sort((a, b) => a.confidence - b.confidence);
     return filtered;
-  }, [items, onlyUncertain, onlyConflicts, sortBy]);
+  }, [items, verdictFilter, onlyConflicts, sortBy]);
 
   const steps = [
     { key: "setup", label: lang === "ar" ? "الإعداد" : "Setup" },
@@ -588,7 +588,15 @@ export function EngineWizard({
                   <Button size="sm" variant="outline" disabled={running} onClick={() => bulkDecision.mutate({ decision: "accept", filters: { minConfidence: params.confidenceThreshold } })}>{lang === "ar" ? `قبول ≥ ${params.confidenceThreshold}` : `Accept ≥ ${params.confidenceThreshold}`}</Button>
                   <Button size="sm" variant="outline" disabled={running} onClick={() => bulkDecision.mutate({ decision: "reject", filters: { maxConfidence: params.confidenceFloor } })}>{lang === "ar" ? `رفض ≤ ${params.confidenceFloor}` : `Reject ≤ ${params.confidenceFloor}`}</Button>
                   <Button size="sm" variant="ghost" disabled={running} onClick={() => bulkDecision.mutate({ decision: "accept" })}>{lang === "ar" ? "قبول الكل" : "Accept all"}</Button>
-                  <label className="ms-2 flex items-center gap-2 text-sm"><Checkbox checked={onlyUncertain} onCheckedChange={(v) => setOnlyUncertain(v === true)} /> {lang === "ar" ? "غير المؤكد" : "Uncertain"}</label>
+                  <label className="ms-2 flex items-center gap-1.5 text-sm">
+                    <span className="text-xs text-muted-foreground">{lang === "ar" ? "النتيجة" : "Verdict"}</span>
+                    <select className="h-8 rounded-md border border-input bg-background px-2 text-xs" value={verdictFilter} onChange={(e) => setVerdictFilter(e.target.value as typeof verdictFilter)}>
+                      <option value="all">{lang === "ar" ? "الكل" : "All"}</option>
+                      <option value="pii">{lang === "ar" ? "بيانات شخصية" : "PII"}</option>
+                      <option value="not_pii">{lang === "ar" ? "ليست شخصية" : "Not personal"}</option>
+                      <option value="uncertain">{lang === "ar" ? "غير مؤكد" : "Uncertain"}</option>
+                    </select>
+                  </label>
                   <label className="flex items-center gap-2 text-sm"><Checkbox checked={onlyConflicts} onCheckedChange={(v) => setOnlyConflicts(v === true)} /> {lang === "ar" ? "المتعارض فقط" : "Conflicts only"}</label>
                   <label className="flex items-center gap-1.5 text-sm">
                     <span className="text-xs text-muted-foreground">{lang === "ar" ? "ترتيب" : "Sort"}</span>
@@ -598,7 +606,7 @@ export function EngineWizard({
                       <option value="confidence">{lang === "ar" ? "الأقل ثقة أولاً" : "Lowest confidence"}</option>
                     </select>
                   </label>
-                  <span className="ms-auto text-sm text-muted-foreground">{items.length} {lang === "ar" ? "نتيجة" : "results"}</span>
+                  <span className="ms-auto text-sm text-muted-foreground">{visibleItems.length === items.length ? `${items.length}` : `${visibleItems.length} / ${items.length}`} {lang === "ar" ? "نتيجة" : "results"}</span>
                 </div>
                 <div className="overflow-x-auto rounded-md border">
                   <table className="w-full text-sm">
