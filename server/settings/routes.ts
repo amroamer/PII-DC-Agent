@@ -28,8 +28,11 @@ export function registerSettingsRoutes(app: Express): void {
     });
   });
 
+  // Prompts the engine actually loads. Others were seeded historically but no code path
+  // calls getPrompt() for them, so editing them would be a no-op — hide them from the editor.
+  const LIVE_PROMPT_KEYS = new Set(["pii_detection_classify", "classification_classify"]);
   app.get("/api/settings/prompts", requireAuth, (_req, res) => {
-    res.json(listPrompts());
+    res.json(listPrompts().filter((p) => LIVE_PROMPT_KEYS.has(p.key)));
   });
 
   // Edit an LLM system prompt (persist + refresh cache).

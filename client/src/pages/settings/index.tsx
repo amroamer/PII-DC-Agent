@@ -751,7 +751,8 @@ function ClassificationEditor({ def, onChange }: { def: Definition; onChange: (d
 
       <div className="space-y-1">
         <Label className="flex items-center gap-1 text-sm font-medium">Roll-up precedence <InfoTip text={GLOSSARY.rollup} /></Label>
-        <Input value={def.rollup ?? ""} onChange={(e) => onChange({ ...def, rollup: e.target.value })} />
+        <Input value={def.rollup ?? ""} readOnly disabled className="cursor-default text-muted-foreground" />
+        <p className="text-[11px] text-muted-foreground">Fixed by the engine (high-water-mark): a table takes its most sensitive column's level. This describes the behaviour — it isn't configurable.</p>
       </div>
     </div>
   );

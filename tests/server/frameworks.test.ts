@@ -41,4 +41,34 @@ describe("framework definition validation (save guard)", () => {
       }),
     ).toThrow();
   });
+
+  it("accepts edited level labels/colors while the code set is unchanged", () => {
+    const renamed = CLASSIFICATION_LEVELS_LIST.map((l) =>
+      l.code === "SECRET" ? { ...l, labelEn: "Top Secret", colorToken: "warning" } : l,
+    );
+    expect(() =>
+      validateDefinition("classification", { levels: renamed, rules: DEFAULT_CLASSIFICATION_RULES }),
+    ).not.toThrow();
+  });
+
+  it("rejects levels with an unknown code (enum must stay fixed)", () => {
+    const bad = [...CLASSIFICATION_LEVELS_LIST.slice(1), { code: "TOP_SECRET", labelEn: "x", labelAr: "x", rank: 4, colorToken: "muted" }];
+    expect(() => validateDefinition("classification", { levels: bad, rules: DEFAULT_CLASSIFICATION_RULES })).toThrow();
+  });
+
+  it("rejects levels missing one of the four codes", () => {
+    expect(() =>
+      validateDefinition("classification", { levels: CLASSIFICATION_LEVELS_LIST.slice(1), rules: DEFAULT_CLASSIFICATION_RULES }),
+    ).toThrow();
+  });
+
+  it("rejects a duplicate level code", () => {
+    const dup = [...CLASSIFICATION_LEVELS_LIST, CLASSIFICATION_LEVELS_LIST[0]];
+    expect(() => validateDefinition("classification", { levels: dup, rules: DEFAULT_CLASSIFICATION_RULES })).toThrow();
+  });
+
+  it("rejects a level with a non-string label", () => {
+    const bad = CLASSIFICATION_LEVELS_LIST.map((l, i) => (i === 0 ? { ...l, labelEn: 123 } : l));
+    expect(() => validateDefinition("classification", { levels: bad, rules: DEFAULT_CLASSIFICATION_RULES })).toThrow();
+  });
 });

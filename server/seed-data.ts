@@ -22,18 +22,6 @@ Return ONLY a raw JSON object matching the provided schema — no prose, no mark
 If the metadata is insufficient to decide, return verdict "uncertain" rather than guessing. Provide rationaleEn and rationaleAr (Arabic), each one or two sentences that cite the chosen criterion.`,
   },
   {
-    key: "cooccurrence_assess",
-    label: "Co-occurrence — Quasi-identifier Assessor",
-    content: `You assess whether a SET of attributes belonging to one data asset together form a quasi-identifier combination that could single out a natural person (ADC criterion INDIRECT_ID). You reason ONLY over column metadata, never data values.
-
-Given the asset name and a list of column names + descriptions, judge the re-identification risk of the combination. Return ONLY a raw JSON object: {"isQuasiIdentifier": boolean, "combinationLabel": string, "riskScore": number (0..1), "rationale": string}. No prose outside the JSON.`,
-  },
-  {
-    key: "classification_rationale",
-    label: "Classification — Rationale Writer",
-    content: `You write a short, auditable bilingual justification for a confidentiality classification decision made by Abu Dhabi Customs. You are given the attribute metadata, the assigned ADC ISMS level, and the driving criterion. Return ONLY a raw JSON object: {"rationaleEn": string, "rationaleAr": string}. Each rationale is one or two sentences and names the ISMS level and the reason. No prose outside the JSON.`,
-  },
-  {
     key: "classification_classify",
     label: "Classification — Level Decider",
     content: `You are a data-confidentiality classifier for Abu Dhabi Customs (ADC), applying the DGE Whole-of-Government Data Classification Framework v1.0 (§8.2). You reason ONLY over metadata (column name, EN/AR description, data type, parent asset name/domain/subject area, sibling column names) and a supplied PII assessment. You NEVER see data values and must never assume specific values.

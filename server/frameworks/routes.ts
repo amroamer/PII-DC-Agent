@@ -15,7 +15,7 @@ import {
   restoreVersion,
 } from "./store";
 import { CRITERION_CODES, isCriterionCode } from "@shared/lib/criteria";
-import { isClassificationCode } from "@shared/lib/classification";
+import { CLASSIFICATION_CODES, isClassificationCode } from "@shared/lib/classification";
 import { db } from "../db";
 
 const RULE_VERDICTS = ["pii", "not_pii", "uncertain"];
@@ -60,6 +60,29 @@ export function validateDefinition(type: FrameworkType, definition: unknown): Re
   } else {
     if (!Array.isArray(def.levels) || def.levels.length === 0) {
       throw new HttpError(400, "Classification framework must define a non-empty `levels` array.");
+    }
+    // Labels/colors/rank are editable, but the CODE set is a fixed enum (used as a DB + LLM
+    // enum in many places), so lock it to exactly the canonical four with no dupes.
+    const levelCodes = new Set<string>();
+    for (const raw of def.levels) {
+      const l = (raw ?? {}) as Record<string, unknown>;
+      if (!isClassificationCode(l.code)) {
+        throw new HttpError(400, `Unknown or missing level code: ${JSON.stringify(l.code)}.`);
+      }
+      if (typeof l.labelEn !== "string" || typeof l.labelAr !== "string") {
+        throw new HttpError(400, `Level ${l.code} needs string labelEn and labelAr.`);
+      }
+      if (l.rank !== undefined && typeof l.rank !== "number") {
+        throw new HttpError(400, `Level ${l.code} rank must be a number.`);
+      }
+      levelCodes.add(l.code);
+    }
+    const missingLevels = CLASSIFICATION_CODES.filter((code) => !levelCodes.has(code));
+    if (missingLevels.length || levelCodes.size !== def.levels.length) {
+      throw new HttpError(
+        400,
+        `Classification levels must be exactly the ${CLASSIFICATION_CODES.length} codes with no duplicates (${missingLevels.length ? `missing ${missingLevels.join(", ")}` : "duplicate code"}).`,
+      );
     }
     if (!Array.isArray(def.rules)) {
       throw new HttpError(400, "Classification framework must define a `rules` array.");

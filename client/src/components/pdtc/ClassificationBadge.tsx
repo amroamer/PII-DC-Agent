@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import { CLASSIFICATION_LEVELS, type ClassificationCode } from "@shared/lib/classification";
 import { useLanguage } from "@/hooks/useLanguage";
+import { useClassificationLevels } from "@/hooks/useClassificationLevels";
 
 const TOKEN_CLASS: Record<string, string> = {
   success: "bg-success/15 text-success border-success/30",
@@ -18,6 +19,7 @@ export function ClassificationBadge({
   className?: string;
 }) {
   const { lang } = useLanguage();
+  const levels = useClassificationLevels();
   if (!code) {
     return (
       <span
@@ -30,7 +32,7 @@ export function ClassificationBadge({
       </span>
     );
   }
-  const def = CLASSIFICATION_LEVELS[code];
+  const def = levels[code] ?? CLASSIFICATION_LEVELS[code];
   const label = lang === "ar" ? def.labelAr : def.labelEn;
   return (
     <span
