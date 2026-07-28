@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowUp, ChevronRight, Info, TriangleAlert } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useLanguage } from "@/hooks/useLanguage";
@@ -118,9 +119,20 @@ export function EngineWizard({
   const [unlocked, setUnlocked] = useState(0);
   const [runId, setRunId] = useState<number | null>(null);
   const [justification, setJustification] = useState("");
-  const [verdictFilter, setVerdictFilter] = useState<"all" | "pii" | "not_pii" | "uncertain">("all");
-  const [onlyConflicts, setOnlyConflicts] = useState(false);
-  const [sortBy, setSortBy] = useState<"default" | "priority" | "confidence">("default");
+  // Results-view filter / sort / group model.
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "pii" | "not_pii" | "uncertain" | "conflicts" | "special" | "ai_unavailable">("all");
+  const [criterionFilter, setCriterionFilter] = useState("all");
+  const [dataClassFilter, setDataClassFilter] = useState("all");
+  const [sourceFilter, setSourceFilter] = useState("all");
+  const [sortKey, setSortKey] = useState<"none" | "column" | "verdict" | "confidence" | "priority" | "decision">("none");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [groupByTable, setGroupByTable] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [openRows, setOpenRows] = useState<Set<number>>(new Set());
+  const toggleRow = (id: number) => setOpenRows((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const toggleGroup = (asset: string) => setCollapsedGroups((s) => { const n = new Set(s); if (n.has(asset)) n.delete(asset); else n.add(asset); return n; });
+  const sortByCol = (key: typeof sortKey) => { if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc")); else { setSortKey(key); setSortDir(key === "confidence" || key === "priority" ? "desc" : "asc"); } };
   const [params, setParams] = useState({
     confidenceThreshold: 0.6,
     confidenceFloor: 0.3,
@@ -246,13 +258,23 @@ export function EngineWizard({
   });
 
   const patchItem = useMutation({
-    mutationFn: (vars: { itemId: number; decision: string }) => apiRequest("PATCH", `/api/engine-runs/${runId}/items/${vars.itemId}`, { stewardDecision: vars.decision }),
+    mutationFn: (vars: { itemId: number; decision: string; override?: { verdict: string; rationale: string } }) =>
+      apiRequest("PATCH", `/api/engine-runs/${runId}/items/${vars.itemId}`, {
+        stewardDecision: vars.decision,
+        ...(vars.override ? { overrideValue: { verdict: vars.override.verdict }, rationale: vars.override.rationale } : {}),
+      }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: [`/api/engine-runs/${runId}/items`] }),
   });
 
   const bulkDecision = useMutation({
-    mutationFn: (vars: { decision: string; filters?: Record<string, unknown> }) =>
-      apiRequest("POST", `/api/engine-runs/${runId}/bulk-decision`, { selection: { mode: "all-matching", filters: vars.filters ?? {}, excluded: [] }, decision: vars.decision }),
+    // `ids` bulk-decides exactly the given items (used to respect the current view filter);
+    // `filters` resolves server-side over the run's staged items (confidence thresholds).
+    mutationFn: (vars: { decision: string; filters?: Record<string, unknown>; ids?: number[] }) => {
+      const selection = vars.ids
+        ? { mode: "include", ids: vars.ids, excluded: [] }
+        : { mode: "all-matching", filters: vars.filters ?? {}, excluded: [] };
+      return apiRequest("POST", `/api/engine-runs/${runId}/bulk-decision`, { selection, decision: vars.decision });
+    },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: [`/api/engine-runs/${runId}/items`] }),
   });
 
@@ -274,13 +296,75 @@ export function EngineWizard({
     },
   });
 
-  const items = itemsQuery.data ?? [];
-  const visibleItems = useMemo(() => {
-    const filtered = items.filter((i) => (verdictFilter === "all" || i.verdict === verdictFilter) && (!onlyConflicts || i.conflict));
-    if (sortBy === "priority") return [...filtered].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || a.confidence - b.confidence);
-    if (sortBy === "confidence") return [...filtered].sort((a, b) => a.confidence - b.confidence);
-    return filtered;
-  }, [items, verdictFilter, onlyConflicts, sortBy]);
+  const items = useMemo(() => itemsQuery.data ?? [], [itemsQuery.data]);
+
+  // Summary over ALL staged items — drives the clickable count chips.
+  const summary = useMemo(() => ({
+    total: items.length,
+    pii: items.filter((i) => i.verdict === "pii").length,
+    not_pii: items.filter((i) => i.verdict === "not_pii").length,
+    uncertain: items.filter((i) => i.verdict === "uncertain").length,
+    conflicts: items.filter((i) => i.conflict).length,
+    special: items.filter(hasSpecial).length,
+    ai_unavailable: items.filter(isAiUnavailable).length,
+  }), [items]);
+
+  // Filter dropdown options, derived from what's actually present in this run.
+  const criterionOptions = useMemo(() => [...new Set(items.flatMap((i) => i.assessments.filter((a) => a.applies).map((a) => a.criterionCode)))].sort(), [items]);
+  const dataClassOptions = useMemo(() => [...new Set(items.map((i) => i.suggestedClassCode).filter((c): c is string => Boolean(c)))].sort(), [items]);
+  const sourceOptions = useMemo(() => [...new Set(items.flatMap((i) => i.sourceLayers ?? []))].sort(), [items]);
+
+  const filteredItems = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return items.filter((i) => {
+      if (statusFilter === "pii" && i.verdict !== "pii") return false;
+      if (statusFilter === "not_pii" && i.verdict !== "not_pii") return false;
+      if (statusFilter === "uncertain" && i.verdict !== "uncertain") return false;
+      if (statusFilter === "conflicts" && !i.conflict) return false;
+      if (statusFilter === "special" && !hasSpecial(i)) return false;
+      if (statusFilter === "ai_unavailable" && !isAiUnavailable(i)) return false;
+      if (criterionFilter !== "all" && !i.assessments.some((a) => a.applies && a.criterionCode === criterionFilter)) return false;
+      if (dataClassFilter !== "all" && i.suggestedClassCode !== dataClassFilter) return false;
+      if (sourceFilter !== "all" && !(i.sourceLayers ?? []).includes(sourceFilter)) return false;
+      if (q && !`${i.columnName ?? ""} ${i.assetName ?? ""}`.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [items, statusFilter, criterionFilter, dataClassFilter, sourceFilter, search]);
+
+  const sortedItems = useMemo(() => {
+    if (sortKey === "none") return filteredItems;
+    const dir = sortDir === "asc" ? 1 : -1;
+    const val = (i: RunItem): string | number =>
+      sortKey === "column" ? (i.columnName ?? "").toLowerCase()
+        : sortKey === "verdict" ? (i.verdict ?? "")
+        : sortKey === "confidence" ? i.confidence
+        : sortKey === "priority" ? (i.priority ?? 0)
+        : i.stewardDecision;
+    return [...filteredItems].sort((a, b) => { const x = val(a), y = val(b); return x < y ? -dir : x > y ? dir : 0; });
+  }, [filteredItems, sortKey, sortDir]);
+
+  // Flatten into virtual rows: group headers + item rows (collapsed groups contribute only a header).
+  type VRow = { type: "group"; asset: string; count: number; pii: number; uncertain: number } | { type: "item"; item: RunItem };
+  const vrows = useMemo<VRow[]>(() => {
+    if (!groupByTable) return sortedItems.map((item) => ({ type: "item", item }));
+    const groups = new Map<string, RunItem[]>();
+    for (const it of sortedItems) { const k = it.assetName ?? "—"; const list = groups.get(k) ?? []; list.push(it); groups.set(k, list); }
+    const out: VRow[] = [];
+    for (const [asset, list] of groups) {
+      out.push({ type: "group", asset, count: list.length, pii: list.filter((i) => i.verdict === "pii").length, uncertain: list.filter((i) => i.verdict === "uncertain").length });
+      if (!collapsedGroups.has(asset)) for (const item of list) out.push({ type: "item", item });
+    }
+    return out;
+  }, [sortedItems, groupByTable, collapsedGroups]);
+
+  const listRef = useRef<HTMLDivElement>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: vrows.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: (i) => (vrows[i].type === "group" ? 40 : openRows.has((vrows[i] as { item: RunItem }).item.id) ? 260 : 56),
+    overscan: 12,
+    getItemKey: (i) => (vrows[i].type === "group" ? `g-${(vrows[i] as { asset: string }).asset}` : `i-${(vrows[i] as { item: RunItem }).item.id}`),
+  });
 
   const steps = [
     { key: "setup", label: lang === "ar" ? "الإعداد" : "Setup" },
@@ -584,40 +668,87 @@ export function EngineWizard({
                     <Progress value={runStatusQuery.data.totalItems > 0 ? Math.round((runStatusQuery.data.processedItems / runStatusQuery.data.totalItems) * 100) : 0} />
                   </div>
                 )}
+                {/* Summary chips — clickable filters over ALL staged items. */}
+                <div className="flex flex-wrap gap-1.5">
+                  <Chip active={statusFilter === "all"} onClick={() => setStatusFilter("all")} label={lang === "ar" ? "الكل" : "All"} n={summary.total} />
+                  <Chip active={statusFilter === "pii"} onClick={() => setStatusFilter((s) => (s === "pii" ? "all" : "pii"))} label="PII" n={summary.pii} tone="primary" />
+                  <Chip active={statusFilter === "not_pii"} onClick={() => setStatusFilter((s) => (s === "not_pii" ? "all" : "not_pii"))} label={lang === "ar" ? "ليست شخصية" : "Not personal"} n={summary.not_pii} tone="success" />
+                  <Chip active={statusFilter === "uncertain"} onClick={() => setStatusFilter((s) => (s === "uncertain" ? "all" : "uncertain"))} label={lang === "ar" ? "غير مؤكد" : "Uncertain"} n={summary.uncertain} tone="warning" />
+                  <Chip active={statusFilter === "conflicts"} onClick={() => setStatusFilter((s) => (s === "conflicts" ? "all" : "conflicts"))} label={lang === "ar" ? "تعارض" : "Conflicts"} n={summary.conflicts} tone="warning" />
+                  <Chip active={statusFilter === "special"} onClick={() => setStatusFilter((s) => (s === "special" ? "all" : "special"))} label={lang === "ar" ? "فئة خاصة" : "Special"} n={summary.special} tone="destructive" />
+                  {summary.ai_unavailable > 0 && <Chip active={statusFilter === "ai_unavailable"} onClick={() => setStatusFilter((s) => (s === "ai_unavailable" ? "all" : "ai_unavailable"))} label={lang === "ar" ? "الذكاء غير متاح" : "AI unavailable"} n={summary.ai_unavailable} tone="destructive" />}
+                </div>
+
+                {/* Search + criterion/class/source filters + group + expand/collapse. */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={lang === "ar" ? "بحث بالعمود…" : "Search column…"} className="h-8 w-44 text-xs" />
+                  {criterionOptions.length > 0 && (
+                    <select className="h-8 rounded-md border border-input bg-background px-2 text-xs" value={criterionFilter} onChange={(e) => setCriterionFilter(e.target.value)}>
+                      <option value="all">{lang === "ar" ? "كل المعايير" : "All criteria"}</option>
+                      {criterionOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  )}
+                  {dataClassOptions.length > 0 && (
+                    <select className="h-8 rounded-md border border-input bg-background px-2 text-xs" value={dataClassFilter} onChange={(e) => setDataClassFilter(e.target.value)}>
+                      <option value="all">{lang === "ar" ? "كل الفئات" : "All classes"}</option>
+                      {dataClassOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  )}
+                  {sourceOptions.length > 0 && (
+                    <select className="h-8 rounded-md border border-input bg-background px-2 text-xs" value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}>
+                      <option value="all">{lang === "ar" ? "كل المصادر" : "All sources"}</option>
+                      {sourceOptions.map((s) => <option key={s} value={s}>{layerLabel(s, lang)}</option>)}
+                    </select>
+                  )}
+                  <label className="flex items-center gap-2 text-sm"><Checkbox checked={groupByTable} onCheckedChange={(v) => setGroupByTable(v === true)} /> {lang === "ar" ? "تجميع حسب الجدول" : "Group by table"}</label>
+                  <div className="flex items-center gap-2 text-xs">
+                    <button type="button" className="text-muted-foreground underline hover:text-foreground" onClick={() => setOpenRows(new Set(sortedItems.map((i) => i.id)))}>{lang === "ar" ? "توسيع الكل" : "Expand all"}</button>
+                    <button type="button" className="text-muted-foreground underline hover:text-foreground" onClick={() => setOpenRows(new Set())}>{lang === "ar" ? "طيّ الكل" : "Collapse all"}</button>
+                  </div>
+                  <span className="ms-auto text-sm text-muted-foreground">{sortedItems.length === items.length ? `${items.length}` : `${sortedItems.length} / ${items.length}`} {lang === "ar" ? "نتيجة" : "results"}</span>
+                </div>
+
+                {/* Bulk actions. "shown" respects the current view filter; thresholds resolve server-side. */}
                 <div className="flex flex-wrap items-center gap-2">
                   <Button size="sm" variant="outline" disabled={running} onClick={() => bulkDecision.mutate({ decision: "accept", filters: { minConfidence: params.confidenceThreshold } })}>{lang === "ar" ? `قبول ≥ ${params.confidenceThreshold}` : `Accept ≥ ${params.confidenceThreshold}`}</Button>
                   <Button size="sm" variant="outline" disabled={running} onClick={() => bulkDecision.mutate({ decision: "reject", filters: { maxConfidence: params.confidenceFloor } })}>{lang === "ar" ? `رفض ≤ ${params.confidenceFloor}` : `Reject ≤ ${params.confidenceFloor}`}</Button>
+                  <Button size="sm" variant="outline" disabled={running || sortedItems.length === 0} onClick={() => bulkDecision.mutate({ decision: "accept", ids: sortedItems.map((i) => i.id) })}>{lang === "ar" ? "قبول المعروض" : "Accept shown"}</Button>
+                  <Button size="sm" variant="outline" disabled={running || sortedItems.length === 0} onClick={() => bulkDecision.mutate({ decision: "reject", ids: sortedItems.map((i) => i.id) })}>{lang === "ar" ? "رفض المعروض" : "Reject shown"}</Button>
                   <Button size="sm" variant="ghost" disabled={running} onClick={() => bulkDecision.mutate({ decision: "accept" })}>{lang === "ar" ? "قبول الكل" : "Accept all"}</Button>
-                  <label className="ms-2 flex items-center gap-1.5 text-sm">
-                    <span className="text-xs text-muted-foreground">{lang === "ar" ? "النتيجة" : "Verdict"}</span>
-                    <select className="h-8 rounded-md border border-input bg-background px-2 text-xs" value={verdictFilter} onChange={(e) => setVerdictFilter(e.target.value as typeof verdictFilter)}>
-                      <option value="all">{lang === "ar" ? "الكل" : "All"}</option>
-                      <option value="pii">{lang === "ar" ? "بيانات شخصية" : "PII"}</option>
-                      <option value="not_pii">{lang === "ar" ? "ليست شخصية" : "Not personal"}</option>
-                      <option value="uncertain">{lang === "ar" ? "غير مؤكد" : "Uncertain"}</option>
-                    </select>
-                  </label>
-                  <label className="flex items-center gap-2 text-sm"><Checkbox checked={onlyConflicts} onCheckedChange={(v) => setOnlyConflicts(v === true)} /> {lang === "ar" ? "المتعارض فقط" : "Conflicts only"}</label>
-                  <label className="flex items-center gap-1.5 text-sm">
-                    <span className="text-xs text-muted-foreground">{lang === "ar" ? "ترتيب" : "Sort"}</span>
-                    <select className="h-8 rounded-md border border-input bg-background px-2 text-xs" value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)}>
-                      <option value="default">{lang === "ar" ? "افتراضي" : "Default"}</option>
-                      <option value="priority">{lang === "ar" ? "الأولوية (الأخطر أولاً)" : "Priority (riskiest first)"}</option>
-                      <option value="confidence">{lang === "ar" ? "الأقل ثقة أولاً" : "Lowest confidence"}</option>
-                    </select>
-                  </label>
-                  <span className="ms-auto text-sm text-muted-foreground">{visibleItems.length === items.length ? `${items.length}` : `${visibleItems.length} / ${items.length}`} {lang === "ar" ? "نتيجة" : "results"}</span>
                 </div>
+
+                {/* Sortable header + virtualized rows. */}
                 <div className="overflow-x-auto rounded-md border">
-                  <table className="w-full text-sm">
-                    <thead className="text-muted-foreground">
-                      <tr className="border-b"><th className="p-2 text-start">Column</th><th className="p-2 text-start">{engineType === "pii" ? "Verdict" : "Level"}</th><th className="p-2 text-start">Suggested</th><th className="p-2 text-start">Confidence</th><th className="p-2 text-start">Source</th><th className="p-2 text-start">Decision</th></tr>
-                    </thead>
-                    <tbody>
-                      {visibleItems.map((item) => <ResultRow key={item.id} item={item} engineType={engineType} lang={lang} onDecision={(d) => patchItem.mutate({ itemId: item.id, decision: d })} />)}
-                      {visibleItems.length === 0 && <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">{itemsQuery.isLoading ? "…" : "No staged results"}</td></tr>}
-                    </tbody>
-                  </table>
+                  <div className="min-w-[720px]">
+                    <div className={cn(RESULT_GRID, "border-b bg-muted/30 py-1.5 text-xs font-medium text-muted-foreground")}>
+                      <SortTh label="Column" col="column" sortKey={sortKey} sortDir={sortDir} onSort={sortByCol} />
+                      <SortTh label={engineType === "pii" ? "Verdict" : "Level"} col="verdict" sortKey={sortKey} sortDir={sortDir} onSort={sortByCol} />
+                      <span>Suggested</span>
+                      <SortTh label="Confidence" col="confidence" sortKey={sortKey} sortDir={sortDir} onSort={sortByCol} />
+                      <span>Source</span>
+                      <SortTh label="Decision" col="decision" sortKey={sortKey} sortDir={sortDir} onSort={sortByCol} />
+                    </div>
+                    <div ref={listRef} className="max-h-[52vh] overflow-y-auto">
+                      {vrows.length === 0 ? (
+                        <div className="p-6 text-center text-sm text-muted-foreground">{itemsQuery.isLoading ? "…" : lang === "ar" ? "لا نتائج" : "No staged results"}</div>
+                      ) : (
+                        <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative", width: "100%" }}>
+                          {rowVirtualizer.getVirtualItems().map((v) => {
+                            const row = vrows[v.index];
+                            return (
+                              <div key={v.key} data-index={v.index} ref={rowVirtualizer.measureElement} style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${v.start}px)` }}>
+                                {row.type === "group" ? (
+                                  <GroupHeader asset={row.asset} count={row.count} pii={row.pii} uncertain={row.uncertain} collapsed={collapsedGroups.has(row.asset)} onToggle={() => toggleGroup(row.asset)} lang={lang} />
+                                ) : (
+                                  <ResultRow item={row.item} engineType={engineType} lang={lang} open={openRows.has(row.item.id)} onToggleOpen={() => toggleRow(row.item.id)} onDecision={(d, ov) => patchItem.mutate({ itemId: row.item.id, decision: d, override: ov })} />
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
@@ -681,26 +812,78 @@ function priorityMeta(priority: number | undefined, lang: string): { label: stri
   return null;
 }
 
-function ResultRow({ item, engineType, lang, onDecision }: { item: RunItem; engineType: string; lang: string; onDecision: (d: string) => void }) {
-  const [open, setOpen] = useState(false);
+/** Shared grid template for the results header + each row (keeps columns aligned). */
+const RESULT_GRID = "grid grid-cols-[minmax(150px,2.2fr)_minmax(84px,1fr)_minmax(64px,0.8fr)_minmax(96px,1.1fr)_minmax(104px,1.2fr)_minmax(104px,1fr)] items-center gap-2 px-2";
+
+function hasSpecial(i: RunItem): boolean {
+  return i.assessments.some((a) => a.applies && a.criterionCode === "SPECIAL_CATEGORY");
+}
+function isAiUnavailable(i: RunItem): boolean {
+  return (i.sourceLayers ?? []).includes("llm_unavailable");
+}
+
+/** Clickable summary chip that filters the results by a status; shows a live count. */
+function Chip({ active, onClick, label, n, tone = "default" }: { active: boolean; onClick: () => void; label: string; n: number; tone?: "default" | "primary" | "success" | "warning" | "destructive" }) {
+  const tones: Record<string, string> = {
+    default: "border-input text-muted-foreground",
+    primary: "border-primary/30 text-primary",
+    success: "border-success/30 text-success",
+    warning: "border-warning/30 text-warning",
+    destructive: "border-destructive/30 text-destructive",
+  };
+  return (
+    <button type="button" onClick={onClick} className={cn("rounded-full border px-2.5 py-1 text-xs transition", active ? "border-foreground bg-foreground text-background" : cn("hover:bg-muted", tones[tone]))}>
+      {label} <span className="font-medium tabular-nums">{n}</span>
+    </button>
+  );
+}
+
+/** Sortable results-header cell — click to sort, arrow shows the active direction. */
+function SortTh({ label, col, sortKey, sortDir, onSort }: { label: string; col: "column" | "verdict" | "confidence" | "decision"; sortKey: string; sortDir: "asc" | "desc"; onSort: (c: "column" | "verdict" | "confidence" | "decision") => void }) {
+  return (
+    <button type="button" onClick={() => onSort(col)} className="flex items-center gap-1 text-start hover:text-foreground">
+      {label}{sortKey === col ? (sortDir === "asc" ? " ↑" : " ↓") : ""}
+    </button>
+  );
+}
+
+/** Collapsible per-table section header (group-by-table) with a mini PII/uncertain summary. */
+function GroupHeader({ asset, count, pii, uncertain, collapsed, onToggle, lang }: { asset: string; count: number; pii: number; uncertain: number; collapsed: boolean; onToggle: () => void; lang: string }) {
+  return (
+    <button type="button" onClick={onToggle} className="flex w-full items-center gap-2 border-b bg-muted/40 px-2 py-2 text-start text-xs font-semibold hover:bg-muted/60">
+      <ChevronRight className={cn("h-3 w-3 shrink-0 transition", !collapsed && "rotate-90")} />
+      <span className="truncate">{asset}</span>
+      <span className="font-normal text-muted-foreground">· {count} {lang === "ar" ? "عمود" : "cols"}</span>
+      {pii > 0 && <span className="rounded bg-primary/15 px-1 text-primary">{pii} PII</span>}
+      {uncertain > 0 && <span className="rounded bg-warning/15 px-1 text-warning">{uncertain} {lang === "ar" ? "غير مؤكد" : "uncertain"}</span>}
+    </button>
+  );
+}
+
+function ResultRow({ item, engineType, lang, onDecision, open, onToggleOpen }: { item: RunItem; engineType: string; lang: string; onDecision: (d: string, override?: { verdict: string; rationale: string }) => void; open: boolean; onToggleOpen: () => void }) {
   const layers = item.sourceLayers ?? [];
   const prio = priorityMeta(item.priority, lang);
+  const [ov, setOv] = useState<null | { verdict: string; rationale: string }>(null);
   // Classification only: the governance floor lifted the level above the model's own call.
   const floorRaised = engineType === "classification" && layers.includes("rule_floor");
   const existingLevel = item.currentValue?.columnDataClassification ?? null;
   const floorHint = lang === "ar" ? "رُفع فوق تقييم النموذج بواسطة الحد الأدنى للحوكمة" : "Raised above the model's assessment by the governance floor";
+  const onDecisionChange = (d: string) => {
+    if (d === "override") setOv({ verdict: item.verdict === "pii" ? "not_pii" : "pii", rationale: "" });
+    else { setOv(null); onDecision(d); }
+  };
   return (
-    <>
-      <tr className="border-b">
-        <td className="p-2">
-          <button type="button" onClick={() => setOpen((o) => !o)} className="flex items-center gap-1 font-medium">
-            <ChevronRight className={cn("h-3 w-3 transition", open && "rotate-90")} />
-            {item.columnName}
-            {prio && <span className={cn("rounded px-1 py-0.5 text-[10px] font-medium", prio.className)}>{prio.label}</span>}
+    <div className="border-b hover:bg-muted/20">
+      <div className={cn(RESULT_GRID, "py-2 text-sm")}>
+        <div className="min-w-0">
+          <button type="button" onClick={onToggleOpen} className="flex items-center gap-1 text-start font-medium">
+            <ChevronRight className={cn("h-3 w-3 shrink-0 transition", open && "rotate-90")} />
+            <span className="truncate">{item.columnName}</span>
+            {prio && <span className={cn("shrink-0 rounded px-1 py-0.5 text-[10px] font-medium", prio.className)}>{prio.label}</span>}
           </button>
-          <span className="ms-4 block text-xs text-muted-foreground">{item.assetName}</span>
-        </td>
-        <td className="p-2">
+          <span className="ms-4 block truncate text-xs text-muted-foreground">{item.assetName}</span>
+        </div>
+        <div>
           {engineType === "pii" ? (
             item.verdict ? <VerdictPill verdict={item.verdict as any} /> : "—"
           ) : (
@@ -709,28 +892,40 @@ function ResultRow({ item, engineType, lang, onDecision }: { item: RunItem; engi
               {floorRaised && <ArrowUp className="h-3.5 w-3.5 text-info" aria-label={floorHint}><title>{floorHint}</title></ArrowUp>}
             </span>
           )}
-        </td>
-        <td className="p-2 text-xs">{item.suggestedClassCode ?? "—"}</td>
-        <td className="p-2"><ConfidenceBar value={item.confidence} /></td>
-        <td className="p-2">
-          <div className="flex flex-wrap items-center gap-1">
-            {layers.map((l) => <span key={l} className="rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">{layerLabel(l, lang)}</span>)}
-            {item.conflict && <TriangleAlert className="h-3.5 w-3.5 text-warning" />}
-          </div>
-        </td>
-        <td className="p-2">
-          <select className="h-8 rounded-md border border-input bg-background px-2 text-xs" value={item.stewardDecision} onChange={(e) => onDecision(e.target.value)}>
-            <option value="accept">Accept</option>
-            <option value="reject">Reject</option>
-            <option value="override">Override</option>
-            <option value="pending">Pending</option>
+        </div>
+        <div className="truncate text-xs">{item.suggestedClassCode ?? "—"}</div>
+        <div><ConfidenceBar value={item.confidence} /></div>
+        <div className="flex flex-wrap items-center gap-1">
+          {layers.map((l) => <span key={l} className="rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">{layerLabel(l, lang)}</span>)}
+          {item.conflict && <TriangleAlert className="h-3.5 w-3.5 text-warning" />}
+        </div>
+        <div>
+          <select className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs" value={ov ? "override" : item.stewardDecision} onChange={(e) => onDecisionChange(e.target.value)}>
+            <option value="accept">{lang === "ar" ? "قبول" : "Accept"}</option>
+            <option value="reject">{lang === "ar" ? "رفض" : "Reject"}</option>
+            <option value="override">{lang === "ar" ? "تجاوز…" : "Override…"}</option>
+            <option value="pending">{lang === "ar" ? "معلّق" : "Pending"}</option>
           </select>
-        </td>
-      </tr>
+        </div>
+      </div>
+
+      {ov && engineType === "pii" && (
+        <div className="flex flex-wrap items-center gap-2 border-t bg-muted/30 px-2 py-2 text-xs">
+          <span className="font-medium">{lang === "ar" ? "تجاوز إلى" : "Override to"}</span>
+          <select className="h-7 rounded-md border border-input bg-background px-2 text-xs" value={ov.verdict} onChange={(e) => setOv({ ...ov, verdict: e.target.value })}>
+            <option value="pii">PII</option>
+            <option value="not_pii">{lang === "ar" ? "ليست شخصية" : "Not personal"}</option>
+          </select>
+          <Input value={ov.rationale} onChange={(e) => setOv({ ...ov, rationale: e.target.value })} placeholder={lang === "ar" ? "السبب (مطلوب)" : "Reason (required)"} className="h-7 min-w-[160px] flex-1 text-xs" />
+          <Button size="sm" className="h-7" disabled={ov.rationale.trim().length < 3} onClick={() => { onDecision("override", ov); setOv(null); }}>{lang === "ar" ? "تطبيق" : "Apply"}</Button>
+          <Button size="sm" variant="ghost" className="h-7" onClick={() => setOv(null)}>{lang === "ar" ? "إلغاء" : "Cancel"}</Button>
+        </div>
+      )}
+
       {open && (
-        <tr className="bg-muted/30">
-          <td colSpan={6} className="space-y-2 p-3">
-            {engineType === "pii" ? (
+        <div className="space-y-2 border-t bg-muted/20 p-3">
+          {engineType === "pii" ? (
+            <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead className="text-muted-foreground"><tr><th className="p-1 text-start">Criterion</th><th className="p-1 text-start">Applies</th><th className="p-1 text-start">Reasoning (EN)</th><th className="p-1 text-start">Reasoning (AR)</th><th className="p-1 text-start">Conf.</th></tr></thead>
                 <tbody>
@@ -745,43 +940,43 @@ function ResultRow({ item, engineType, lang, onDecision }: { item: RunItem; engi
                   ))}
                 </tbody>
               </table>
-            ) : (
-              // Classification: show HOW the level was derived — existing catalog level, the
-              // contributing layers, and (when the floor lifted it) an explicit note.
-              <div className="space-y-1.5 text-xs">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-medium">{lang === "ar" ? "اشتقاق المستوى" : "Level derivation"}:</span>
-                  {isClassificationCode(existingLevel ?? "") && (
-                    <span className="inline-flex items-center gap-1">
-                      <span className="text-muted-foreground">{lang === "ar" ? "الحالي" : "Current"}</span>
-                      <ClassificationBadge code={existingLevel as any} />
-                      <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                    </span>
-                  )}
+            </div>
+          ) : (
+            // Classification: show HOW the level was derived — existing catalog level, the
+            // contributing layers, and (when the floor lifted it) an explicit note.
+            <div className="space-y-1.5 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium">{lang === "ar" ? "اشتقاق المستوى" : "Level derivation"}:</span>
+                {isClassificationCode(existingLevel ?? "") && (
                   <span className="inline-flex items-center gap-1">
-                    <span className="text-muted-foreground">{lang === "ar" ? "المقترح" : "Suggested"}</span>
-                    <ClassificationBadge code={item.suggestedLevelCode as any} />
+                    <span className="text-muted-foreground">{lang === "ar" ? "الحالي" : "Current"}</span>
+                    <ClassificationBadge code={existingLevel as any} />
+                    <ChevronRight className="h-3 w-3 text-muted-foreground" />
                   </span>
-                  {layers.map((l) => <span key={l} className="rounded bg-secondary px-1.5 py-0.5 text-[10px]">{layerLabel(l, lang)}</span>)}
-                </div>
-                {floorRaised && (
-                  <p className="flex items-start gap-1 text-info">
-                    <ArrowUp className="mt-0.5 h-3 w-3 shrink-0" />
-                    <span>{floorHint}.</span>
-                  </p>
                 )}
+                <span className="inline-flex items-center gap-1">
+                  <span className="text-muted-foreground">{lang === "ar" ? "المقترح" : "Suggested"}</span>
+                  <ClassificationBadge code={item.suggestedLevelCode as any} />
+                </span>
+                {layers.map((l) => <span key={l} className="rounded bg-secondary px-1.5 py-0.5 text-[10px]">{layerLabel(l, lang)}</span>)}
               </div>
-            )}
-            {(item.rationaleEn || item.rationaleAr) && (
-              <p className="text-xs">
-                <span className="font-medium">{lang === "ar" ? "المبرر العام" : "Overall rationale"}: </span>
-                {lang === "ar" ? item.rationaleAr : item.rationaleEn}
-              </p>
-            )}
-          </td>
-        </tr>
+              {floorRaised && (
+                <p className="flex items-start gap-1 text-info">
+                  <ArrowUp className="mt-0.5 h-3 w-3 shrink-0" />
+                  <span>{floorHint}.</span>
+                </p>
+              )}
+            </div>
+          )}
+          {(item.rationaleEn || item.rationaleAr) && (
+            <p className="text-xs">
+              <span className="font-medium">{lang === "ar" ? "المبرر العام" : "Overall rationale"}: </span>
+              {lang === "ar" ? item.rationaleAr : item.rationaleEn}
+            </p>
+          )}
+        </div>
       )}
-    </>
+    </div>
   );
 }
 
