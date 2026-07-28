@@ -60,7 +60,7 @@ async function main() {
   const runRes = await fetch(`${BASE}/api/engine-runs`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: cookie },
-    body: JSON.stringify({ engineType: "pii", screen: "attributes", selection: { mode: "include", ids, excluded: [] }, params: { forceFresh: true, ...extraParams } }),
+    body: JSON.stringify({ engineType: "pii", screen: "attributes", selection: { mode: "include", ids, excluded: [] }, params: { forceFresh: true, skipApproved: false, ...extraParams } }),
   });
   const run = (await runRes.json()) as { id: number };
   process.stdout.write(`Run ${run.id} `);

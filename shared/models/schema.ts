@@ -632,6 +632,15 @@ export const engineParamsSchema = z.object({
   useCache: z.boolean().default(true),
   forceFresh: z.boolean().default(false),
   skipApproved: z.boolean().default(true),
+  // Incremental re-scan (B): skip columns whose committed detection input is unchanged.
+  incremental: z.boolean().default(false),
+  // "Commit & see" (A): auto-publish confident verdicts to the catalog without a manual approve.
+  publishConfident: z.boolean().default(false),
+  // Batch inference (C2, experimental): several columns per LLM call.
+  batchInference: z.boolean().default(false),
+  llmBatchSize: z.number().int().min(2).max(30).default(8),
+  // Operational short-circuit (C1): resolve clearly-operational columns without the LLM.
+  shortCircuitOperational: z.boolean().default(true),
   runNote: z.string().optional(),
 });
 export type EngineParams = z.infer<typeof engineParamsSchema>;

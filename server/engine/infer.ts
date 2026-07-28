@@ -435,7 +435,17 @@ async function defaultBatchInfer(payloads: CanonicalAttribute[], systemPrompt: s
     `Judge every attribute on its OWN column — do NOT let one attribute's personal data influence another's verdict; each is a separate decision. ` +
     `Return {"items": [...]} where items[i] is the assessment for attributes[i], in the same order.\n\nattributes:\n${JSON.stringify(payloads, null, 2)}`;
   try {
-    const raw = await aiComplete({ system: systemPrompt, prompt, schema: PII_ASSESS_BATCH_SCHEMA, temperature: 0, topP: 1, seed });
+    // The batch output is ~N full assessments; scale the token budget with N (the default
+    // 3000 truncates the JSON for N≳4, which then fails to parse and drops the whole chunk).
+    const raw = await aiComplete({
+      system: systemPrompt,
+      prompt,
+      schema: PII_ASSESS_BATCH_SCHEMA,
+      temperature: 0,
+      topP: 1,
+      seed,
+      maxTokens: Math.min(16000, 2500 + 1500 * payloads.length),
+    });
     const parsed = extractJson<{ items: PiiAssessment[] }>(raw);
     const items = Array.isArray(parsed?.items) ? parsed.items : [];
     return payloads.map((_, i) => items[i] ?? null);
