@@ -70,6 +70,7 @@ interface AiConfig {
   baseUrl: string;
   model: string;
   apiKeyMasked: string;
+  apiKeySource: "stored" | "env" | "none";
   seed: number;
   temperature: number;
   batchSize: number;
@@ -108,11 +109,15 @@ function AiSettings() {
     if (c) setForm({ seed: c.seed, maxBatchSize: c.maxBatchSize, batchSize: c.batchSize, confidenceThreshold: c.confidenceThreshold, confidenceFloor: c.confidenceFloor, selfConsistencySamples: c.selfConsistencySamples });
   }, [c]);
   const saveMutation = useMutation({
-    mutationFn: () => apiRequest("PUT", "/api/settings/ai", { ...form, ...(apiKey ? { apiKey } : {}) }),
-    onSuccess: () => {
+    mutationFn: () => apiRequest<{ ok: boolean; apiKeyStored?: boolean }>("PUT", "/api/settings/ai", { ...form, ...(apiKey ? { apiKey } : {}) }),
+    onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: ["/api/settings/ai"] });
       setApiKey("");
-      toast({ title: "AI settings saved" });
+      if (res?.apiKeyStored === false) {
+        toast({ variant: "destructive", title: "API key NOT saved", description: "Set SESSION_SECRET (or SETTINGS_ENCRYPTION_KEY) on the server to store a key. Other settings were saved." });
+      } else {
+        toast({ title: "AI settings saved" });
+      }
     },
   });
   const numField = (key: string, label: string, step = "1") => (
@@ -133,6 +138,14 @@ function AiSettings() {
             <div className="space-y-1">
               <Label className="text-xs text-muted-foreground">API key (write-only)</Label>
               <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={c?.apiKeyMasked ?? "sk-…"} />
+              <p className="text-[11px] text-muted-foreground">
+                Engine is using:{" "}
+                {c?.apiKeySource === "stored"
+                  ? "the key saved here (encrypted)."
+                  : c?.apiKeySource === "env"
+                    ? "the server OPENAI_API_KEY. Save a key here to override it."
+                    : "no key (unauthenticated). Fine for local endpoints; save a key for hosted providers."}
+              </p>
             </div>
             <ReadOnly label="Temperature" value="0 (locked — determinism requirement)" />
             {numField("seed", "Seed")}

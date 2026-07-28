@@ -16,6 +16,7 @@ import {
   setSetting,
 } from "../reference-cache";
 import { getActiveClassificationRules } from "../frameworks/store";
+import { decryptSecret, encryptSecret, hasEncryptionSecret } from "./secret";
 
 export function registerSettingsRoutes(app: Express): void {
   // Reference data for the client (criteria, ISMS levels, data-class library).
@@ -83,11 +84,20 @@ export function registerSettingsRoutes(app: Express): void {
 
   // --- AI provider settings (Prompt 2 §10.1) -------------------------------
   app.get("/api/settings/ai", requireAuth, (_req, res) => {
+    const enc = getSetting<string>("ai_api_key_enc");
+    const stored = Boolean(enc && decryptSecret(enc) !== null);
+    // Which key the engine will actually authenticate with (matches resolveApiKey precedence).
+    const apiKeySource: "stored" | "env" | "none" = stored
+      ? "stored"
+      : process.env.OPENAI_API_KEY
+        ? "env"
+        : "none";
     const last4 = getSetting<string>("ai_api_key_last4") ?? (process.env.OPENAI_API_KEY ?? "").slice(-4);
     res.json({
       baseUrl: process.env.OPENAI_BASE_URL ?? "",
       model: process.env.OPENAI_MODEL ?? "",
       apiKeyMasked: last4 ? `••••${last4}` : "(not set)",
+      apiKeySource,
       timeout: getSetting<number>("ai_timeout") ?? 30000,
       maxRetries: getSetting<number>("ai_max_retries") ?? 2,
       seed: getSetting<number>("inference_seed") ?? 42,
@@ -105,11 +115,22 @@ export function registerSettingsRoutes(app: Express): void {
     requireAdmin,
     asyncHandler(async (req, res) => {
       const body = req.body ?? {};
-      // API key is write-only: persist only the last 4 chars, never the full value.
+      // API key is write-only: the full value is stored ENCRYPTED (ai_api_key_enc) so the
+      // engine can authenticate with it; the last 4 chars are stored separately for masking.
+      let apiKeyStored: boolean | undefined;
       if (typeof body.apiKey === "string" && body.apiKey.length >= 4) {
-        const last4 = body.apiKey.slice(-4);
-        await db.insert(appSettings).values({ key: "ai_api_key_last4", value: last4 }).onConflictDoUpdate({ target: appSettings.key, set: { value: last4 } });
-        setSetting("ai_api_key_last4", last4);
+        const persist = async (key: string, value: string) => {
+          await db.insert(appSettings).values({ key, value }).onConflictDoUpdate({ target: appSettings.key, set: { value } });
+          setSetting(key, value);
+        };
+        await persist("ai_api_key_last4", body.apiKey.slice(-4));
+        // Without a master secret we refuse to store the raw key (no plaintext secrets at rest).
+        if (hasEncryptionSecret()) {
+          await persist("ai_api_key_enc", encryptSecret(body.apiKey));
+          apiKeyStored = true;
+        } else {
+          apiKeyStored = false;
+        }
       }
       const numericKeys: Record<string, string> = {
         timeout: "ai_timeout",
@@ -127,7 +148,8 @@ export function registerSettingsRoutes(app: Express): void {
           setSetting(settingKey, body[field]);
         }
       }
-      res.json({ ok: true });
+      // apiKeyStored=false signals the UI that the key could NOT be saved (no master secret set).
+      res.json({ ok: true, ...(apiKeyStored !== undefined ? { apiKeyStored } : {}) });
     }),
   );
 

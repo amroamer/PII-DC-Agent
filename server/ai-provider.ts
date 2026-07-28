@@ -7,6 +7,24 @@
  * vLLM / LiteLLM) so metadata stays inside the ADC boundary.
  */
 
+import { getSetting } from "./reference-cache";
+import { decryptSecret } from "./settings/secret";
+
+/**
+ * The API key the engine authenticates with. A key saved through Settings (stored
+ * ENCRYPTED in app_settings as `ai_api_key_enc`) takes precedence; otherwise we
+ * fall back to the OPENAI_API_KEY env var. A stored blob that fails to decrypt
+ * (master secret rotated / corrupt) also falls back to the env var.
+ */
+export function resolveApiKey(): string {
+  const enc = getSetting<string>("ai_api_key_enc");
+  if (enc) {
+    const dec = decryptSecret(enc);
+    if (dec) return dec;
+  }
+  return process.env.OPENAI_API_KEY ?? "";
+}
+
 export class AiUnavailableError extends Error {
   constructor(message: string) {
     super(message);
@@ -56,7 +74,7 @@ interface ChatMessage {
 function endpoint(): { baseUrl: string; model: string; apiKey: string } {
   const baseUrl = (process.env.OPENAI_BASE_URL ?? "").replace(/\/+$/, "");
   const model = process.env.OPENAI_MODEL ?? "";
-  const apiKey = process.env.OPENAI_API_KEY ?? "";
+  const apiKey = resolveApiKey();
   if (!baseUrl || !model) {
     throw new AiUnavailableError(
       "AI provider not configured — set OPENAI_BASE_URL and OPENAI_MODEL.",
