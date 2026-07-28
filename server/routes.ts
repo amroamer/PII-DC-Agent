@@ -11,7 +11,7 @@ import { registerReviewRoutes } from "./review/routes";
 import { registerWritebackRoutes } from "./writeback/routes";
 import { registerCatalogRoutes } from "./catalog/routes";
 import { registerEngineRoutes } from "./engine/routes";
-import { recoverStaleRuns } from "./engine/runs";
+import { pruneOldRuns, recoverStaleRuns } from "./engine/runs";
 import { registerFrameworkRoutes } from "./frameworks/routes";
 import { registerExportImportRoutes } from "./exchange/routes";
 import { registerFileRoutes } from "./files/routes";
@@ -22,11 +22,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
   await seedReferenceData();
 
   // Any run left 'running' by a prior process can never resume — mark it failed.
+  // Then enforce the run-retention policy (delete terminal runs past the cutoff).
   try {
     await recoverStaleRuns();
+    await pruneOldRuns();
   } catch {
     /* DB unavailable — handled the same way as seeding */
   }
+
+  // Daily retention sweep for long-lived processes (boot-time prune covers restarts).
+  // Unref'd so this timer never keeps the process alive on its own.
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  setInterval(() => {
+    pruneOldRuns().catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error("Scheduled run-retention prune failed:", err);
+    });
+  }, DAY_MS).unref();
 
   setupAuth(app);
 

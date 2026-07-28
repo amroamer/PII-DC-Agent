@@ -237,4 +237,5 @@ export const SEED_APP_SETTINGS: Array<{ key: string; value: unknown }> = [
   { key: "max_batch_size", value: 5000 },
   { key: "inference_seed", value: 42 },
   { key: "default_batch_size", value: 25 },
+  { key: "engine_runs_retention_days", value: 90 },
 ];

@@ -3,11 +3,12 @@
  * criterion_assessments. The catalog (assets/attributes/detections/classifications)
  * is untouched until an explicit approval transaction (see approve.ts).
  */
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, ne, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   assets,
   attributes,
+  cooccurrenceFindings,
   criterionAssessments,
   detections,
   engineRuns,
@@ -103,6 +104,47 @@ export async function recoverStaleRuns(): Promise<void> {
     .update(engineRuns)
     .set({ status: "failed", completedAt: new Date() })
     .where(eq(engineRuns.status, "running"));
+}
+
+/** Default retention when the steward has not set `engine_runs_retention_days`. */
+export const DEFAULT_RUN_RETENTION_DAYS = 90;
+
+/**
+ * Enforce the "Engine-runs retention (days)" setting: delete terminal runs older than the
+ * cutoff along with their staged scaffolding (run_items → criterion_assessments, and the
+ * non-FK cooccurrence_findings tagged by run id). Committed catalog data is NEVER touched —
+ * approved verdicts live in `detections`/`classifications`/`attributes`/`assets`, which
+ * reference a run only by a plain-text `runId`, so pruning the run row leaves the catalog
+ * intact. A 'running' run is always spared. A retention of 0 (or less) disables pruning.
+ * Returns the number of runs deleted.
+ */
+export async function pruneOldRuns(): Promise<number> {
+  const days = getSetting<number>("engine_runs_retention_days") ?? DEFAULT_RUN_RETENTION_DAYS;
+  if (typeof days !== "number" || !Number.isFinite(days) || days <= 0) return 0;
+
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  // Age a run by the latest of its lifecycle timestamps (started is notNull; the others fill in).
+  const ageBasis = sql`coalesce(${engineRuns.completedAt}, ${engineRuns.approvedAt}, ${engineRuns.startedAt})`;
+  const stale = await db
+    .select({ id: engineRuns.id })
+    .from(engineRuns)
+    .where(and(ne(engineRuns.status, "running"), lt(ageBasis, cutoff)));
+  const ids = stale.map((r) => r.id);
+  if (ids.length === 0) return 0;
+
+  // Delete bottom-up so foreign-key constraints (assessments → items → runs) never block.
+  const items = await db.select({ id: runItems.id }).from(runItems).where(inArray(runItems.runId, ids));
+  const itemIds = items.map((i) => i.id);
+  if (itemIds.length) {
+    await db.delete(criterionAssessments).where(inArray(criterionAssessments.runItemId, itemIds));
+  }
+  await db.delete(runItems).where(inArray(runItems.runId, ids));
+  await db.delete(cooccurrenceFindings).where(inArray(cooccurrenceFindings.runId, ids.map(String)));
+  await db.delete(engineRuns).where(inArray(engineRuns.id, ids));
+
+  // eslint-disable-next-line no-console
+  console.log(`Pruned ${ids.length} engine run(s) older than ${days} day(s) (retention policy).`);
+  return ids.length;
 }
 
 interface PreparedRun {
