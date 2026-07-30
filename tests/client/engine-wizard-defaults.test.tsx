@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { LanguageProvider } from "@/context/LanguageContext";
 import { EngineWizard } from "@/components/pdtc/EngineWizard";
@@ -57,5 +57,17 @@ describe("EngineWizard seeds run defaults from saved AI settings", () => {
       expect(batchInput()?.value).toBe("40");
       expect(selfConsistencyInput()?.value).toBe("5");
     });
+  });
+
+  it("surfaces the 'Criteria to evaluate' selector on the main Setup screen (not inside Advanced)", async () => {
+    renderWizard({ maxBatchSize: 5000, batchSize: 8, selfConsistencySamples: 3 });
+
+    const heading = await screen.findByText(/Criteria to evaluate/i);
+    // Must NOT be nested inside the collapsible <details> ("Advanced options").
+    expect(heading.closest("details")).toBeNull();
+    // All five criterion checkboxes are present.
+    for (const code of ["DIRECT_ID", "INDIRECT_ID", "REGULATORY", "CONTEXTUAL", "SPECIAL_CATEGORY"]) {
+      expect(screen.getByText(code)).toBeInTheDocument();
+    }
   });
 });

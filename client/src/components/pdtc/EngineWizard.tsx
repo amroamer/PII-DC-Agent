@@ -599,6 +599,30 @@ export function EngineWizard({
                   )}
                 </section>
 
+                {/* Which policy criteria this run evaluates (PII only). Surfaced here — not buried
+                    in Advanced — so a partial-coverage run is a deliberate, visible choice. */}
+                {engineType === "pii" && (
+                  <section className="space-y-2">
+                    <p className="flex items-center gap-1 text-sm font-medium">
+                      {lang === "ar" ? "المعايير المراد تقييمها" : "Criteria to evaluate"}
+                      <span className="font-normal text-muted-foreground">
+                        {lang === "ar" ? "(كل المعايير افتراضياً)" : "(all by default)"}
+                      </span>
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-2">
+                      {CRITERION_CODES.map((c) => (
+                        <label key={c} className="flex items-center gap-1.5 text-sm">
+                          <Checkbox checked={params.criteria.includes(c)} onCheckedChange={(v) => setParams((p) => ({ ...p, criteria: v === true ? [...p.criteria, c] : p.criteria.filter((x) => x !== c) }))} />
+                          {c}
+                        </label>
+                      ))}
+                    </div>
+                    {params.criteria.length < CRITERION_CODES.length && (
+                      <p className="text-xs text-warning">{lang === "ar" ? "تشغيل جزئي لا يُعد دليلاً على التغطية الكاملة." : "A partial run cannot be used as evidence of full policy coverage."}</p>
+                    )}
+                  </section>
+                )}
+
                 {/* Panel C: essentials — strictness + run note */}
                 <section className="space-y-3">
                   <div>
@@ -655,22 +679,6 @@ export function EngineWizard({
                         </label>
                       )}
                     </div>
-                    {engineType === "pii" && (
-                      <div>
-                        <p className="mb-1 text-sm font-medium">{lang === "ar" ? "المعايير المراد تقييمها" : "Criteria to evaluate"}</p>
-                        <div className="flex flex-wrap gap-2">
-                          {CRITERION_CODES.map((c) => (
-                            <label key={c} className="flex items-center gap-1.5 text-xs">
-                              <Checkbox checked={params.criteria.includes(c)} onCheckedChange={(v) => setParams((p) => ({ ...p, criteria: v === true ? [...p.criteria, c] : p.criteria.filter((x) => x !== c) }))} />
-                              {c}
-                            </label>
-                          ))}
-                        </div>
-                        {params.criteria.length < CRITERION_CODES.length && (
-                          <p className="mt-1 text-xs text-warning">{lang === "ar" ? "تشغيل جزئي لا يُعد دليلاً على التغطية الكاملة." : "A partial run cannot be used as evidence of full policy coverage."}</p>
-                        )}
-                      </div>
-                    )}
                   </div>
                 </details>
               </div>
