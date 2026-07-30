@@ -148,19 +148,22 @@ export function reconciliationNote(
   finalLevel: ClassificationCode,
   existingLevel: ClassificationCode | null,
   includeArabic: boolean,
+  /** Label resolver — pass the active framework's labels so a renamed level shows in the
+   *  stored rationale. Defaults to the built-in labels. */
+  labelOf: (code: ClassificationCode, lang?: "en" | "ar") => string = levelLabel,
 ): { en: string; ar: string } {
   if (!modelLevel || modelLevel === finalLevel) return { en: "", ar: "" };
   const heldByExisting = existingLevel !== null && levelRank(existingLevel) >= levelRank(finalLevel);
   const en =
-    `Final level ${levelLabel(finalLevel)}: the AI model assessed ${levelLabel(modelLevel)}, but the engine raised it — ` +
+    `Final level ${labelOf(finalLevel)}: the AI model assessed ${labelOf(modelLevel)}, but the engine raised it — ` +
     (heldByExisting
-      ? `held at the column's existing catalog classification (${levelLabel(existingLevel!)}); the engine never downgrades below it.`
+      ? `held at the column's existing catalog classification (${labelOf(existingLevel!)}); the engine never downgrades below it.`
       : `the special-category / personal-data policy floor applies.`) +
     " ";
   const ar = includeArabic
-    ? `المستوى النهائي ${levelLabel(finalLevel, "ar")}: قيّم النموذج ${levelLabel(modelLevel, "ar")}، لكن المحرك رفعه — ` +
+    ? `المستوى النهائي ${labelOf(finalLevel, "ar")}: قيّم النموذج ${labelOf(modelLevel, "ar")}، لكن المحرك رفعه — ` +
       (heldByExisting
-        ? `مثبّت عند التصنيف الحالي للعمود (${levelLabel(existingLevel!, "ar")})؛ ولا يخفّضه المحرك دون ذلك.`
+        ? `مثبّت عند التصنيف الحالي للعمود (${labelOf(existingLevel!, "ar")})؛ ولا يخفّضه المحرك دون ذلك.`
         : `بسبب الحد الأدنى لسياسة الفئة الخاصة/البيانات الشخصية.`) +
       " "
     : "";

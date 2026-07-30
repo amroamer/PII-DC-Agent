@@ -21,7 +21,7 @@ import {
 } from "@shared/models/schema";
 import type { CriterionCode, CriterionDef } from "@shared/lib/criteria";
 import { CRITERION_CODES, CRITERION_PRECEDENCE } from "@shared/lib/criteria";
-import { moreRestrictive, type ClassificationCode } from "@shared/lib/classification";
+import { CLASSIFICATION_LEVELS_LIST, moreRestrictive, type ClassificationCode, type ClassificationLevelDef } from "@shared/lib/classification";
 import { getDataClasses, getPrompt, getSetting } from "../reference-cache";
 import { classifyByRules, reconcileLevel, reconciliationNote, type ClassificationRule } from "../classification-engine/attribute-rules";
 import { inferClassificationLevel, type ClassInferContext } from "../classification-engine/classify-infer";
@@ -30,6 +30,7 @@ import type { CatalogScreen } from "@shared/lib/filter-defs";
 import { joinFacet } from "@shared/lib/facets";
 import { resolveSelection } from "../catalog/query";
 import {
+  getActiveClassificationLevels,
   getActiveClassificationRules,
   getActiveFrameworkVersion,
   getActivePiiCriteria,
@@ -233,6 +234,9 @@ async function prepareRun(input: CreateRunInput, actorId: number | null): Promis
 
   const classificationRules =
     input.engineType === "classification" ? await getActiveClassificationRules() : [];
+  // Active level labels so stored rationale reflects a steward's renamed levels (not the built-ins).
+  const classificationLevels =
+    input.engineType === "classification" ? await getActiveClassificationLevels() : CLASSIFICATION_LEVELS_LIST;
 
   const ctx: ProcessCtx = {
     engineType: input.engineType,
@@ -248,6 +252,7 @@ async function prepareRun(input: CreateRunInput, actorId: number | null): Promis
     classSystemPrompt: getPrompt("classification_classify"),
     criteria: codes,
     classificationRules,
+    classificationLevels,
   };
   return { run, targetIds, ctx };
 }
@@ -407,6 +412,7 @@ interface ProcessCtx {
   classSystemPrompt: string;
   criteria: CriterionCode[];
   classificationRules: ClassificationRule[];
+  classificationLevels: ClassificationLevelDef[];
 }
 
 async function processRun(
@@ -432,6 +438,12 @@ async function processRun(
 
   const rules = ctx.classificationRules;
   const specialCodes = new Set(getDataClasses().filter((d) => d.isSpecialCategory).map((d) => d.code));
+  // Resolve level labels from the ACTIVE framework so stored rationale honours renamed levels.
+  const levelLabelByCode = new Map(ctx.classificationLevels.map((l) => [l.code, l]));
+  const labelOf = (code: ClassificationCode, lang: "en" | "ar" = "en"): string => {
+    const l = levelLabelByCode.get(code);
+    return l ? (lang === "ar" ? l.labelAr : l.labelEn) : code;
+  };
 
   const inferCtx: InferContext = {
     modelId: ctx.modelId,
@@ -565,6 +577,7 @@ async function processRun(
             suggestedLevelCode,
             attr.columnDataClassification ?? null,
             classInferCtx.includeArabic,
+            labelOf,
           );
           itemRationaleEn = recon.en + (classResult.rationaleEn || `Classified ${suggestedLevelCode}.`);
           itemRationaleAr = recon.ar + classResult.rationaleAr;

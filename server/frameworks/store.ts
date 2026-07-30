@@ -19,7 +19,13 @@ import {
   type CriterionCode,
   type CriterionDef,
 } from "@shared/lib/criteria";
-import { CLASSIFICATION_LEVELS_LIST, isClassificationCode } from "@shared/lib/classification";
+import {
+  CLASSIFICATION_CODES,
+  CLASSIFICATION_LEVELS,
+  CLASSIFICATION_LEVELS_LIST,
+  isClassificationCode,
+  type ClassificationLevelDef,
+} from "@shared/lib/classification";
 import {
   DEFAULT_CLASSIFICATION_RULES,
   type ClassificationRule,
@@ -180,6 +186,36 @@ export async function getActiveClassificationRules(): Promise<ClassificationRule
     ? raw.map(coerceRule).filter((r): r is ClassificationRule => r !== null)
     : [];
   return rules.length > 0 ? rules : DEFAULT_CLASSIFICATION_RULES;
+}
+
+function coerceLevel(raw: unknown): ClassificationLevelDef | null {
+  if (!raw || typeof raw !== "object") return null;
+  const l = raw as Record<string, unknown>;
+  if (!isClassificationCode(l.code)) return null;
+  const fallback = CLASSIFICATION_LEVELS[l.code];
+  return {
+    code: l.code,
+    labelEn: typeof l.labelEn === "string" && l.labelEn.trim() ? l.labelEn : fallback.labelEn,
+    labelAr: typeof l.labelAr === "string" && l.labelAr.trim() ? l.labelAr : fallback.labelAr,
+    rank: typeof l.rank === "number" && Number.isFinite(l.rank) ? l.rank : fallback.rank,
+    colorToken: typeof l.colorToken === "string" && l.colorToken.trim() ? l.colorToken : fallback.colorToken,
+  };
+}
+
+/**
+ * Classification levels (labels/colors/rank) from the active framework version. Guards the
+ * enum: if the edited set is not exactly the canonical codes, the code default is used, so a
+ * malformed import can never break level handling. Lets engine output use edited labels.
+ */
+export async function getActiveClassificationLevels(): Promise<ClassificationLevelDef[]> {
+  const { definition } = await getActiveFrameworkVersion("classification");
+  const raw = definition.levels;
+  const levels = Array.isArray(raw)
+    ? raw.map(coerceLevel).filter((l): l is ClassificationLevelDef => l !== null)
+    : [];
+  const codes = new Set(levels.map((l) => l.code));
+  const canonical = codes.size === CLASSIFICATION_CODES.length && CLASSIFICATION_CODES.every((c) => codes.has(c));
+  return canonical ? levels : CLASSIFICATION_LEVELS_LIST;
 }
 
 /** PII criterion definitions from the active framework version (fallback: code default). */
