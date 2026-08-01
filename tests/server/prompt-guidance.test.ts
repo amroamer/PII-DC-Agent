@@ -17,6 +17,13 @@ describe("PII detection prompt guidance", () => {
     expect(prompt).toMatch(/contextual: it applies only through semantic judgement/);
     expect(prompt).toContain("DIRECT_ID (Direct Identifiability) [intrinsic]");
   });
+
+  it("carries the business-vs-person rule (business identifiers are not personal)", () => {
+    const prompt = composeSystemPrompt("BASE", POLICY_CRITERIA_LIST, [...CRITERION_CODES]);
+    expect(prompt).toMatch(/BUSINESS \/ legal-entity identifiers are NOT personal/i);
+    expect(prompt).toMatch(/customs registration code/i);
+    expect(prompt).toMatch(/trade licence number/i);
+  });
 });
 
 describe("classification prompt §8.2 guidance", () => {

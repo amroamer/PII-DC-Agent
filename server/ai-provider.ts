@@ -162,11 +162,16 @@ export async function aiComplete(params: AiCompleteParams): Promise<string> {
   // verdict — never a silent not_pii.
   // 5xx/network are retried here; a transient 429 is raised as RateLimitError so the run's
   // adaptive controller can slow the whole run down (retrying just this call won't help).
+  // Both configurable in Settings → AI. maxRetries counts retries ON TOP of the first try;
+  // ai_timeout aborts a single hung request so it is retried instead of blocking the run.
   const RETRYABLE = new Set([500, 502, 503, 504]);
-  const maxAttempts = 3;
+  const maxAttempts = Math.max(1, (getSetting<number>("ai_max_retries") ?? 2) + 1);
+  const timeoutMs = Math.max(1000, getSetting<number>("ai_timeout") ?? 30000);
   let res: Response | null = null;
   let lastError = "";
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
       res = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
@@ -175,10 +180,16 @@ export async function aiComplete(params: AiCompleteParams): Promise<string> {
           ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
         },
         body: JSON.stringify(body),
+        signal: ctrl.signal,
       });
     } catch (err) {
       res = null;
-      lastError = `unreachable at ${baseUrl}: ${(err as Error).message}`;
+      lastError =
+        (err as Error)?.name === "AbortError"
+          ? `timed out after ${timeoutMs}ms at ${baseUrl}`
+          : `unreachable at ${baseUrl}: ${(err as Error).message}`;
+    } finally {
+      clearTimeout(timer);
     }
     if (res && res.ok) break;
     const status = res?.status ?? 0;
