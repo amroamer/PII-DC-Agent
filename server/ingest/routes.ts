@@ -12,9 +12,14 @@ import {
   type IngestPlan,
 } from "./import";
 
+/** Max size for an uploaded IKC workbook. Keep the nginx `client_max_body_size`
+ *  (nginx/default.conf) at least this large, or the proxy rejects big uploads with
+ *  HTTP 413 before they ever reach the app. */
+export const UPLOAD_MAX_BYTES = 200 * 1024 * 1024; // 200 MB
+
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 },
+  limits: { fileSize: UPLOAD_MAX_BYTES },
 });
 
 interface CachedPlan {
