@@ -45,6 +45,19 @@ export interface FilterDefinition {
   staticOptions?: FilterOption[];
   min?: number;
   max?: number;
+  /**
+   * Hidden until the user opens "More filters". The default set is the handful a
+   * steward actually reaches for; everything else is specialist and was turning
+   * the panel into a wall of ~46 controls.
+   */
+  advanced?: boolean;
+  /**
+   * Availability key — when set, the panel hides this filter unless the catalog
+   * has something to filter ON (see /api/catalog/filter-availability). Governance
+   * and review filters are real features that are simply switched off in a given
+   * deployment; they should appear the day data exists, not before.
+   */
+  availability?: string;
 }
 
 export const FILTER_GROUP_LABELS: Record<FilterGroup, { en: string; ar: string }> = {
@@ -148,61 +161,71 @@ export const ASSET_FILTERS: FilterDefinition[] = [
   { key: "hasBusinessDomain", labelEn: "Business domain assigned", labelAr: "مجال معيّن", group: "completeness", control: "exists" },
 ];
 
+/**
+ * Attribute filters, ordered default-set first.
+ *
+ * Ten filters were removed outright because they cannot match anything by
+ * construction, not merely because a given catalog is empty:
+ *   criteriaCount   — the engine records ONE criterion per detection, so the
+ *                     count can never reach 2 and the range is meaningless.
+ *   conflict        — needs two layers to disagree; in practice only the LLM
+ *                     layer produces a signal, so nothing ever conflicts.
+ *   cooccurrence    — the co-occurrence engine writes no findings.
+ *   assetType       — one value across the whole catalog (nothing to narrow).
+ *   storage         — likewise one value.
+ *   piiName         — populated only by formal approval; effectively always null.
+ *   hasBusinessTerms / hasSuggestedTerms — the IKC export carries neither.
+ *   classificationSource — no attribute-scope classification rows are written.
+ */
 export const ATTRIBUTE_FILTERS: FilterDefinition[] = [
+  // --- default set: what a steward actually reaches for -------------------
   { key: "search", labelEn: "Search", labelAr: "بحث", group: "identity", control: "text" },
-  { key: "assetId", labelEn: "Asset", labelAr: "الأصل", group: "identity", control: "multiselect", optionsSource: "distinct" },
   { key: "columnName", labelEn: "Column Name", labelAr: "اسم العمود", group: "identity", control: "text" },
-
+  { key: "assetId", labelEn: "Asset", labelAr: "الأصل", group: "identity", control: "multiselect", optionsSource: "distinct" },
   { key: "businessDomain", labelEn: "Business Domain", labelAr: "المجال التجاري", group: "business", control: "multiselect", optionsSource: "distinct" },
-  { key: "subjectArea", labelEn: "Subject Area", labelAr: "مجال الموضوع", group: "business", control: "multiselect", optionsSource: "distinct" },
-  { key: "department", labelEn: "Department", labelAr: "الإدارة", group: "business", control: "multiselect", optionsSource: "distinct" },
-  { key: "sector", labelEn: "Sector", labelAr: "القطاع", group: "business", control: "multiselect", optionsSource: "distinct" },
-  { key: "storage", labelEn: "Storage", labelAr: "التخزين", group: "business", control: "multiselect", optionsSource: "distinct" },
-  { key: "assetType", labelEn: "Asset Type", labelAr: "نوع الأصل", group: "business", control: "multiselect", optionsSource: "distinct" },
-  { key: "parentClassification", labelEn: "Parent asset classification", labelAr: "تصنيف الأصل الأصل", group: "business", control: "multiselect", optionsSource: "static", staticOptions: CLASSIFICATION_OPTIONS },
-  { key: "parentIsCde", labelEn: "Parent asset is CDE", labelAr: "الأصل الأصل حرج", group: "business", control: "tristate" },
-
-  { key: "dataType", labelEn: "Data type", labelAr: "نوع البيانات", group: "technical", control: "multiselect", optionsSource: "distinct" },
-  { key: "nativeType", labelEn: "Native type", labelAr: "النوع الأصلي", group: "technical", control: "multiselect", optionsSource: "distinct" },
-  { key: "length", labelEn: "Length", labelAr: "الطول", group: "technical", control: "numeric-range", min: 0 },
-  { key: "scale", labelEn: "Scale", labelAr: "المقياس", group: "technical", control: "numeric-range", min: 0 },
-  { key: "nullable", labelEn: "Nullable", labelAr: "يقبل القيمة الفارغة", group: "technical", control: "tristate" },
-  { key: "signed", labelEn: "Signed", labelAr: "موقّع", group: "technical", control: "tristate" },
-  { key: "isPrimaryKey", labelEn: "Is primary key", labelAr: "مفتاح رئيسي", group: "technical", control: "tristate" },
-
-  { key: "qualityScore", labelEn: "Quality score", labelAr: "درجة الجودة", group: "quality", control: "numeric-range", min: 0, max: 100 },
-
-  { key: "selectedDataClassName", labelEn: "Selected data class", labelAr: "فئة البيانات المختارة", group: "classification", control: "multiselect", optionsSource: "distinct" },
-  { key: "selectedDataClassConfidence", labelEn: "Selected class confidence", labelAr: "ثقة الفئة المختارة", group: "classification", control: "numeric-range", min: 0, max: 1 },
-  { key: "hasSuggestedClasses", labelEn: "Has suggested classes", labelAr: "لديه فئات مقترحة", group: "classification", control: "boolean" },
-  { key: "hasBusinessTerms", labelEn: "Business terms assigned", labelAr: "مصطلحات معيّنة", group: "classification", control: "exists" },
-  { key: "hasSuggestedTerms", labelEn: "Has suggested terms", labelAr: "لديه مصطلحات مقترحة", group: "classification", control: "boolean" },
-  { key: "columnDataClassification", labelEn: "Column classification", labelAr: "تصنيف العمود", group: "classification", control: "multiselect", optionsSource: "static", staticOptions: CLASSIFICATION_OPTIONS },
-  { key: "classificationSource", labelEn: "Classification source", labelAr: "مصدر التصنيف", group: "classification", control: "enum", optionsSource: "static", staticOptions: CLASSIFICATION_SOURCE_OPTIONS },
-
   { key: "verdict", labelEn: "PII verdict", labelAr: "قرار البيانات الشخصية", group: "pii", control: "multiselect", optionsSource: "static", staticOptions: VERDICT_OPTIONS },
   { key: "criterion", labelEn: "Matched criterion", labelAr: "المعيار المطابق", group: "pii", control: "multiselect", optionsSource: "static", staticOptions: CRITERION_OPTIONS },
-  { key: "criteriaCount", labelEn: "Number of criteria matched", labelAr: "عدد المعايير المطابقة", group: "pii", control: "numeric-range", min: 0, max: 5 },
-  { key: "specialCategory", labelEn: "Special category", labelAr: "فئة خاصة", group: "pii", control: "boolean" },
-  { key: "piiName", labelEn: "PII Name", labelAr: "اسم البيانات الشخصية", group: "pii", control: "multiselect", optionsSource: "distinct" },
-  { key: "sourceLayer", labelEn: "Detection source layer", labelAr: "طبقة مصدر الكشف", group: "pii", control: "multiselect", optionsSource: "static", staticOptions: SOURCE_LAYER_OPTIONS },
   { key: "engineConfidence", labelEn: "Engine confidence", labelAr: "ثقة المحرك", group: "pii", control: "numeric-range", min: 0, max: 1 },
-  { key: "conflict", labelEn: "Layers in conflict", labelAr: "تعارض الطبقات", group: "pii", control: "boolean" },
-  { key: "cooccurrence", labelEn: "Part of co-occurrence finding", labelAr: "ضمن نتيجة اقتران", group: "pii", control: "boolean" },
-
+  { key: "columnDataClassification", labelEn: "Column classification", labelAr: "تصنيف العمود", group: "classification", control: "multiselect", optionsSource: "static", staticOptions: CLASSIFICATION_OPTIONS },
   { key: "cdeFlag", labelEn: "Critical Data Element", labelAr: "عنصر بيانات حرج", group: "governance", control: "tristate" },
-  { key: "consentStatus", labelEn: "Consent status", labelAr: "حالة الموافقة", group: "governance", control: "multiselect", optionsSource: "distinct" },
-  { key: "accessControlLevel", labelEn: "Access control level", labelAr: "مستوى التحكم في الوصول", group: "governance", control: "multiselect", optionsSource: "distinct" },
-  { key: "processingPurposePresent", labelEn: "Processing purpose present", labelAr: "غرض المعالجة موجود", group: "governance", control: "exists" },
-
-  { key: "reviewStatus", labelEn: "Review status", labelAr: "حالة المراجعة", group: "review", control: "enum", optionsSource: "static", staticOptions: REVIEW_STATUS_OPTIONS },
-  { key: "assignedTo", labelEn: "Assigned to", labelAr: "مُسند إلى", group: "review", control: "multiselect", optionsSource: "distinct" },
-  { key: "resolvedBy", labelEn: "Resolved by", labelAr: "حُسم بواسطة", group: "review", control: "multiselect", optionsSource: "distinct" },
-  { key: "engineRun", labelEn: "Engine run", labelAr: "تشغيل المحرك", group: "review", control: "multiselect", optionsSource: "distinct" },
+  { key: "dataType", labelEn: "Data type", labelAr: "نوع البيانات", group: "technical", control: "multiselect", optionsSource: "distinct" },
   { key: "lastAnalysed", labelEn: "Last analysed", labelAr: "آخر تحليل", group: "review", control: "date-range" },
-
   { key: "hasEnDescription", labelEn: "English description present", labelAr: "وصف إنجليزي موجود", group: "completeness", control: "exists" },
-  { key: "hasArDescription", labelEn: "Arabic description present", labelAr: "وصف عربي موجود", group: "completeness", control: "exists" },
+
+  // --- advanced: works, has data, but specialist --------------------------
+  { key: "subjectArea", labelEn: "Subject Area", labelAr: "مجال الموضوع", group: "business", control: "multiselect", optionsSource: "distinct", advanced: true },
+  { key: "department", labelEn: "Department", labelAr: "الإدارة", group: "business", control: "multiselect", optionsSource: "distinct", advanced: true },
+  { key: "sector", labelEn: "Sector", labelAr: "القطاع", group: "business", control: "multiselect", optionsSource: "distinct", advanced: true },
+  { key: "parentClassification", labelEn: "Parent asset classification", labelAr: "تصنيف الأصل الأصل", group: "business", control: "multiselect", optionsSource: "static", staticOptions: CLASSIFICATION_OPTIONS, advanced: true },
+  { key: "parentIsCde", labelEn: "Parent asset is CDE", labelAr: "الأصل الأصل حرج", group: "business", control: "tristate", advanced: true },
+
+  { key: "nativeType", labelEn: "Native type", labelAr: "النوع الأصلي", group: "technical", control: "multiselect", optionsSource: "distinct", advanced: true },
+  { key: "length", labelEn: "Length", labelAr: "الطول", group: "technical", control: "numeric-range", min: 0, advanced: true },
+  { key: "scale", labelEn: "Scale", labelAr: "المقياس", group: "technical", control: "numeric-range", min: 0, advanced: true },
+  { key: "nullable", labelEn: "Nullable", labelAr: "يقبل القيمة الفارغة", group: "technical", control: "tristate", advanced: true },
+  { key: "signed", labelEn: "Signed", labelAr: "موقّع", group: "technical", control: "tristate", advanced: true },
+  { key: "isPrimaryKey", labelEn: "Is primary key", labelAr: "مفتاح رئيسي", group: "technical", control: "tristate", advanced: true },
+
+  { key: "qualityScore", labelEn: "Quality score", labelAr: "درجة الجودة", group: "quality", control: "numeric-range", min: 0, max: 100, advanced: true },
+
+  { key: "selectedDataClassName", labelEn: "Selected data class", labelAr: "فئة البيانات المختارة", group: "classification", control: "multiselect", optionsSource: "distinct", advanced: true },
+  { key: "selectedDataClassConfidence", labelEn: "Selected class confidence", labelAr: "ثقة الفئة المختارة", group: "classification", control: "numeric-range", min: 0, max: 1, advanced: true },
+  { key: "hasSuggestedClasses", labelEn: "Has suggested classes", labelAr: "لديه فئات مقترحة", group: "classification", control: "boolean", advanced: true },
+
+  { key: "sourceLayer", labelEn: "Detection source layer", labelAr: "طبقة مصدر الكشف", group: "pii", control: "multiselect", optionsSource: "static", staticOptions: SOURCE_LAYER_OPTIONS, advanced: true },
+  // Kept (not deleted) because the Special KPI card applies it: it appears once a
+  // run actually scores SPECIAL_CATEGORY, which the Direct+Indirect scope does not.
+  { key: "specialCategory", labelEn: "Special category", labelAr: "فئة خاصة", group: "pii", control: "boolean", advanced: true, availability: "specialCategory" },
+  { key: "engineRun", labelEn: "Engine run", labelAr: "تشغيل المحرك", group: "review", control: "multiselect", optionsSource: "distinct", advanced: true },
+  { key: "hasArDescription", labelEn: "Arabic description present", labelAr: "وصف عربي موجود", group: "completeness", control: "exists", advanced: true },
+
+  // --- availability-gated: real features, hidden until switched on --------
+  { key: "reviewStatus", labelEn: "Review status", labelAr: "حالة المراجعة", group: "review", control: "enum", optionsSource: "static", staticOptions: REVIEW_STATUS_OPTIONS, advanced: true, availability: "reviewItems" },
+  { key: "assignedTo", labelEn: "Assigned to", labelAr: "مُسند إلى", group: "review", control: "multiselect", optionsSource: "distinct", advanced: true, availability: "reviewAssignees" },
+  { key: "resolvedBy", labelEn: "Resolved by", labelAr: "حُسم بواسطة", group: "review", control: "multiselect", optionsSource: "distinct", advanced: true, availability: "reviewResolvers" },
+  { key: "consentStatus", labelEn: "Consent status", labelAr: "حالة الموافقة", group: "governance", control: "multiselect", optionsSource: "distinct", advanced: true, availability: "consentStatus" },
+  { key: "accessControlLevel", labelEn: "Access control level", labelAr: "مستوى التحكم في الوصول", group: "governance", control: "multiselect", optionsSource: "distinct", advanced: true, availability: "accessControlLevel" },
+  { key: "processingPurposePresent", labelEn: "Processing purpose present", labelAr: "غرض المعالجة موجود", group: "governance", control: "exists", advanced: true, availability: "processingPurpose" },
 ];
 
 export const FILTERS_BY_SCREEN: Record<CatalogScreen, FilterDefinition[]> = {

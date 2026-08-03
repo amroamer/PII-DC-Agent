@@ -585,6 +585,38 @@ const distinctCache = new Map<string, { value: string; count: number }[]>();
 
 export function invalidateDistinctCache(): void {
   distinctCache.clear();
+  availabilityCache = null;
+}
+
+/**
+ * Which optional catalog features actually have data behind them.
+ *
+ * Governance metadata and the steward review queue are real features that a
+ * deployment may simply not use yet. Rather than permanently showing filters
+ * that can only ever return zero rows, the panel asks here and renders each one
+ * the day its table has a row. Cached alongside the distinct-option cache and
+ * cleared by the same invalidation.
+ */
+export type FilterAvailability = Record<string, boolean>;
+
+let availabilityCache: FilterAvailability | null = null;
+
+export async function getFilterAvailability(): Promise<FilterAvailability> {
+  if (availabilityCache) return availabilityCache;
+  // One round trip: every probe is an EXISTS, so Postgres stops at the first row.
+  const result = await db.execute<Record<string, boolean>>(sql`
+    SELECT
+      EXISTS (SELECT 1 FROM review_items WHERE target_type = 'attribute') AS "reviewItems",
+      EXISTS (SELECT 1 FROM review_items WHERE target_type = 'attribute' AND assigned_to IS NOT NULL) AS "reviewAssignees",
+      EXISTS (SELECT 1 FROM review_items WHERE target_type = 'attribute' AND resolved_by IS NOT NULL) AS "reviewResolvers",
+      EXISTS (SELECT 1 FROM metadata_completion WHERE consent_status IS NOT NULL) AS "consentStatus",
+      EXISTS (SELECT 1 FROM metadata_completion WHERE access_control_level IS NOT NULL) AS "accessControlLevel",
+      EXISTS (SELECT 1 FROM metadata_completion WHERE processing_purpose IS NOT NULL) AS "processingPurpose",
+      EXISTS (SELECT 1 FROM detections WHERE criterion_code = ${SPECIAL_CATEGORY_CODE}) AS "specialCategory"
+  `);
+  const row = (result.rows ?? [])[0] as Record<string, unknown> | undefined;
+  availabilityCache = Object.fromEntries(Object.entries(row ?? {}).map(([k, v]) => [k, v === true]));
+  return availabilityCache;
 }
 
 export async function distinctOptions(screen: CatalogScreen, key: string) {

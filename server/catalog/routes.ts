@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { asyncHandler, HttpError, requireAdmin, requireAuth } from "../http";
 import { savedViewSchema, selectionSchema, type User } from "@shared/models/schema";
 import type { CatalogScreen, FilterState } from "@shared/lib/filter-defs";
-import { listAssets, listAttributes, listScopeTables, distinctOptions, resolveSelection } from "./query";
+import { listAssets, listAttributes, listScopeTables, distinctOptions, getFilterAvailability, resolveSelection } from "./query";
 import { getAssetKpis, getAttributeKpis, getPiiDensity } from "./kpis";
 import { wipeAllData } from "./wipe";
 import { getAssetDetail, getAttributeDetail } from "./detail";
@@ -135,6 +135,15 @@ export function registerCatalogRoutes(app: Express): void {
       const key = typeof req.query.key === "string" ? req.query.key : "";
       if (!key) throw new HttpError(400, "key is required.");
       res.json(await distinctOptions(screen, key));
+    }),
+  );
+
+  // Which availability-gated filters have data behind them (see filter-defs.ts).
+  app.get(
+    "/api/catalog/filter-availability",
+    requireAuth,
+    asyncHandler(async (_req, res) => {
+      res.json(await getFilterAvailability());
     }),
   );
 

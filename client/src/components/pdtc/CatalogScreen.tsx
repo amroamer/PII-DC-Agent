@@ -79,7 +79,13 @@ export function CatalogScreen({ screen }: { screen: Screen }) {
 
   const { toast } = useToast();
   const defs = FILTERS_BY_SCREEN[screen];
-  const activeChips = defs.filter((d) => d.key !== "search" && effectiveFilters[d.key] !== undefined);
+  // Chips are derived from the ACTIVE FILTER STATE, not from the visible filter
+  // defs. A filter can be applied by something other than the panel — a KPI card,
+  // a saved view, a criteria-distribution bar — and if no chip rendered for it the
+  // user would have no way to see or clear it.
+  const activeChips = Object.keys(effectiveFilters)
+    .filter((key) => key !== "search" && effectiveFilters[key] !== undefined)
+    .map((key) => defs.find((d) => d.key === key) ?? { key, labelEn: key, labelAr: key });
   const columns = useMemo(() => columnsFor(screen), [screen]);
   const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
 

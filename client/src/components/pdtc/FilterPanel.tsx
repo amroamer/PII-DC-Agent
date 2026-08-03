@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useLanguage } from "@/hooks/useLanguage";
+import { cn } from "@/lib/utils";
 
 export function FilterPanel({
   screen,
@@ -28,12 +29,27 @@ export function FilterPanel({
   flat?: boolean;
 }) {
   const { lang } = useLanguage();
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const availabilityQuery = useQuery<Record<string, boolean>>({ queryKey: ["/api/catalog/filter-availability"] });
+
+  // A filter tied to an unused feature can only ever return zero rows, so it is
+  // not rendered at all until that feature has data. Until the probe resolves,
+  // assume unavailable — better a filter that appears a moment late than a panel
+  // that flashes controls which then vanish.
+  const available = (d: FilterDefinition) => !d.availability || availabilityQuery.data?.[d.availability] === true;
+  // An advanced filter the user has already set stays visible, so an active
+  // filter can never hide behind a collapsed section.
+  const isActive = (d: FilterDefinition) => filters[d.key] !== undefined;
+
+  const visible = defs.filter((d) => d.key !== "search" && available(d));
+  const shown = visible.filter((d) => !d.advanced || showAdvanced || isActive(d));
+  const hiddenCount = visible.length - shown.length;
 
   if (flat) {
     return (
       <Card>
         <CardContent className="grid gap-3 py-4 sm:grid-cols-2 lg:grid-cols-3">
-          {defs.filter((d) => d.key !== "search").map((d) => (
+          {visible.map((d) => (
             <FilterField key={d.key} screen={screen} def={d} value={filters[d.key]} onChange={(v) => onChange(d.key, v)} />
           ))}
         </CardContent>
@@ -41,20 +57,30 @@ export function FilterPanel({
     );
   }
 
-  const groups = [...new Set(defs.map((d) => d.group))];
+  const groups = [...new Set(shown.map((d) => d.group))];
   return (
     <Card>
-      <CardContent className="grid gap-4 py-4 md:grid-cols-2 lg:grid-cols-3">
-        {groups.map((group) => (
-          <div key={group} className="space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              {lang === "ar" ? FILTER_GROUP_LABELS[group].ar : FILTER_GROUP_LABELS[group].en}
-            </p>
-            {defs.filter((d) => d.group === group && d.key !== "search").map((d) => (
-              <FilterField key={d.key} screen={screen} def={d} value={filters[d.key]} onChange={(v) => onChange(d.key, v)} />
-            ))}
-          </div>
-        ))}
+      <CardContent className="space-y-4 py-4">
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {groups.map((group) => (
+            <div key={group} className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {lang === "ar" ? FILTER_GROUP_LABELS[group].ar : FILTER_GROUP_LABELS[group].en}
+              </p>
+              {shown.filter((d) => d.group === group).map((d) => (
+                <FilterField key={d.key} screen={screen} def={d} value={filters[d.key]} onChange={(v) => onChange(d.key, v)} />
+              ))}
+            </div>
+          ))}
+        </div>
+        {(hiddenCount > 0 || showAdvanced) && (
+          <Button variant="ghost" size="sm" onClick={() => setShowAdvanced((v) => !v)} className="gap-1">
+            <ChevronDown className={cn("h-4 w-4 transition-transform", showAdvanced && "rotate-180")} />
+            {showAdvanced
+              ? lang === "ar" ? "إخفاء المرشحات المتقدمة" : "Fewer filters"
+              : lang === "ar" ? `المزيد من المرشحات (${hiddenCount})` : `More filters (${hiddenCount})`}
+          </Button>
+        )}
       </CardContent>
     </Card>
   );
