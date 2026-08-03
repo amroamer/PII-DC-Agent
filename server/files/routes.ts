@@ -11,10 +11,20 @@ import { desc, eq, ilike, inArray } from "drizzle-orm";
 import { db } from "../db";
 import { storedFiles, type User } from "@shared/models/schema";
 import { asyncHandler, HttpError, requireAuth } from "../http";
+import { UPLOAD_MAX_BYTES } from "../ingest/routes";
 
+/**
+ * Shares the IKC ingest ceiling (200 MB) so the two upload paths cannot drift,
+ * and so both stay tied to the nginx `client_max_body_size` that fronts them —
+ * a limit raised here but not there fails at the proxy with an opaque 413.
+ *
+ * NOTE: multer buffers into memory, so `files` x `fileSize` is the worst-case
+ * RSS for one request. 20 x 200 MB is deliberately generous for a test-import
+ * screen; lower `files` if this ever runs somewhere memory-constrained.
+ */
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024, files: 20 },
+  limits: { fileSize: UPLOAD_MAX_BYTES, files: 20 },
 });
 
 // Metadata columns only — never load the bytea content into a list query.

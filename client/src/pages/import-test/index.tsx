@@ -149,7 +149,7 @@ export default function ImportTestPage() {
           <Btn icon={<FileUp className="h-4 w-4" />} loading={uploadMutation.isPending} onClick={() => fileRef.current?.click()}>
             {lang === "ar" ? "اختر ملفات" : "Choose files"}
           </Btn>
-          <span className="text-xs text-muted-foreground">{lang === "ar" ? "حتى 20 ملفاً، 50 ميغابايت لكل ملف" : "Up to 20 files, 50 MB each"}</span>
+          <span className="text-xs text-muted-foreground">{lang === "ar" ? "حتى 20 ملفاً، 200 ميغابايت لكل ملف" : "Up to 20 files, 200 MB each"}</span>
         </CardContent>
       </Card>
 

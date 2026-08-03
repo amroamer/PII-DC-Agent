@@ -1,12 +1,35 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import express from "express";
 import type { Server } from "node:http";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { registerIngestRoutes, UPLOAD_MAX_BYTES } from "../../server/ingest/routes";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 describe("ingest upload size limit", () => {
   it("is 200 MB", () => {
     expect(UPLOAD_MAX_BYTES).toBe(200 * 1024 * 1024);
     expect(UPLOAD_MAX_BYTES).toBe(209715200);
+  });
+
+  it("does not exceed the nginx client_max_body_size that fronts it", () => {
+    // A limit raised in the app but not at the proxy fails as an opaque 413
+    // before the request ever reaches Express, so the two are pinned together.
+    const conf = readFileSync(resolve(__dirname, "../../nginx/default.conf"), "utf8");
+    const m = conf.match(/client_max_body_size\s+(\d+)m/i);
+    expect(m, "client_max_body_size not found in nginx/default.conf").toBeTruthy();
+    expect(Number(m![1]) * 1024 * 1024).toBeGreaterThanOrEqual(UPLOAD_MAX_BYTES);
+  });
+});
+
+describe("Import Test file store", () => {
+  it("shares the ingest ceiling rather than keeping its own", () => {
+    // It had its own 50 MB cap, so the two upload paths drifted apart.
+    const src = readFileSync(resolve(__dirname, "../../server/files/routes.ts"), "utf8");
+    expect(src).toContain("UPLOAD_MAX_BYTES");
+    expect(src).not.toMatch(/fileSize:\s*50\s*\*/);
   });
 });
 
