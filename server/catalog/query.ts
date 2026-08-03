@@ -657,16 +657,26 @@ export async function distinctOptions(screen: CatalogScreen, key: string) {
   if (key === "importBatch") {
     const q =
       screen === "attributes"
-        ? sql`SELECT ir.id::text AS value, count(a.id)::int AS count, ir.filename, ir.started_at
+        ? sql`SELECT ir.id::text AS value, count(a.id)::int AS count, count(DISTINCT a.asset_id)::int AS tables,
+                     ir.filename, ir.started_at
               FROM ingest_runs ir JOIN attributes a ON a.ingest_run_id = ir.id
               GROUP BY ir.id, ir.filename, ir.started_at ORDER BY ir.started_at DESC`
-        : sql`SELECT ir.id::text AS value, count(s.id)::int AS count, ir.filename, ir.started_at
+        : sql`SELECT ir.id::text AS value, count(s.id)::int AS count, count(s.id)::int AS tables,
+                     ir.filename, ir.started_at
               FROM ingest_runs ir JOIN assets s ON s.ingest_run_id = ir.id
               GROUP BY ir.id, ir.filename, ir.started_at ORDER BY ir.started_at DESC`;
     const rows = await db.execute(q);
-    const result = (rows.rows as Array<{ value: string; count: number; filename: string; started_at: string | Date }>).map((r) => {
+    // Load date + size, newest first. The IKC filename is a 40-character
+    // timestamped blob whose two variants differ only deep inside it, so it
+    // truncates to nothing useful in a picker — it lives in the export's
+    // "Source Import" column instead, where there is room for it.
+    const result = (rows.rows as Array<{ value: string; count: number; tables: number; filename: string; started_at: string | Date }>).map((r) => {
       const date = new Date(r.started_at).toISOString().slice(0, 10);
-      return { value: String(r.value), count: Number(r.count), label: `${r.filename} · ${date}` };
+      return {
+        value: String(r.value),
+        count: Number(r.count),
+        label: `${date} · ${Number(r.tables).toLocaleString()} tables`,
+      };
     });
     distinctCache.set(cacheKey, result);
     return result;

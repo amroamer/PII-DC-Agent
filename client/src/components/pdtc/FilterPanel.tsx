@@ -58,28 +58,44 @@ export function FilterPanel({
   }
 
   const groups = [...new Set(shown.map((d) => d.group))];
+  // Group headers only earn their space once there is enough to organise. With
+  // the default dozen they cost more than they give — a section with one field
+  // burns a whole band and the panel turns into a tall ladder of near-empty
+  // rows. Flat grid when few, sections when the advanced set is open.
+  const useGroups = showAdvanced && shown.length > 16;
+
   return (
     <Card>
-      <CardContent className="space-y-4 py-4">
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {groups.map((group) => (
-            <div key={group} className="space-y-2">
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+      <CardContent className={cn("py-0", useGroups && "divide-y")}>
+        {useGroups ? (
+          groups.map((group) => (
+            <section key={group} className="py-4">
+              <p className="mb-2.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 {lang === "ar" ? FILTER_GROUP_LABELS[group].ar : FILTER_GROUP_LABELS[group].en}
               </p>
-              {shown.filter((d) => d.group === group).map((d) => (
-                <FilterField key={d.key} screen={screen} def={d} value={filters[d.key]} onChange={(v) => onChange(d.key, v)} />
-              ))}
-            </div>
-          ))}
-        </div>
+              <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {shown.filter((d) => d.group === group).map((d) => (
+                  <FilterField key={d.key} screen={screen} def={d} value={filters[d.key]} onChange={(v) => onChange(d.key, v)} />
+                ))}
+              </div>
+            </section>
+          ))
+        ) : (
+          <div className="grid gap-x-4 gap-y-3 py-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {shown.map((d) => (
+              <FilterField key={d.key} screen={screen} def={d} value={filters[d.key]} onChange={(v) => onChange(d.key, v)} />
+            ))}
+          </div>
+        )}
         {(hiddenCount > 0 || showAdvanced) && (
-          <Button variant="ghost" size="sm" onClick={() => setShowAdvanced((v) => !v)} className="gap-1">
-            <ChevronDown className={cn("h-4 w-4 transition-transform", showAdvanced && "rotate-180")} />
-            {showAdvanced
-              ? lang === "ar" ? "إخفاء المرشحات المتقدمة" : "Fewer filters"
-              : lang === "ar" ? `المزيد من المرشحات (${hiddenCount})` : `More filters (${hiddenCount})`}
-          </Button>
+          <div className={cn("py-2", !useGroups && "border-t")}>
+            <Button variant="ghost" size="sm" onClick={() => setShowAdvanced((v) => !v)} className="gap-1">
+              <ChevronDown className={cn("h-4 w-4 transition-transform", showAdvanced && "rotate-180")} />
+              {showAdvanced
+                ? lang === "ar" ? "إخفاء المرشحات المتقدمة" : "Fewer filters"
+                : lang === "ar" ? `المزيد من المرشحات (${hiddenCount})` : `More filters (${hiddenCount})`}
+            </Button>
+          </div>
         )}
       </CardContent>
     </Card>
@@ -99,17 +115,38 @@ function FilterField({
 }) {
   const { lang } = useLanguage();
   const label = lang === "ar" ? def.labelAr : def.labelEn;
+  const isSet = value !== undefined;
+
+  // Every field is the same shape — label above, full-width control below — so a
+  // row of filters lines up. Mixing inline "label … [Any]" rows with stacked
+  // ones was what made the panel look ragged.
+  const Field = ({ children }: { children: React.ReactNode }) => (
+    <div className="min-w-0 space-y-1">
+      <label className={cn("block truncate text-xs font-medium", isSet ? "text-primary" : "text-muted-foreground")} title={label}>
+        {label}
+      </label>
+      {children}
+    </div>
+  );
+
+  const selectClass = cn(
+    "h-9 w-full rounded-md border bg-background px-2 text-sm",
+    isSet ? "border-primary/50" : "border-input",
+  );
 
   if (def.control === "text") {
-    return <Input value={(value as string) ?? ""} onChange={(e) => onChange(e.target.value || undefined)} placeholder={label} className="h-9" />;
+    return (
+      <Field>
+        <Input value={(value as string) ?? ""} onChange={(e) => onChange(e.target.value || undefined)} placeholder={label} className="h-9" />
+      </Field>
+    );
   }
   if (def.control === "tristate" || def.control === "boolean" || def.control === "exists") {
     const v = value === true ? "yes" : value === false ? "no" : "any";
     return (
-      <div className="flex items-center gap-2">
-        <span className="flex-1 text-sm">{label}</span>
+      <Field>
         <select
-          className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+          className={selectClass}
           value={v}
           onChange={(e) => onChange(e.target.value === "any" ? undefined : e.target.value === "yes")}
         >
@@ -117,15 +154,14 @@ function FilterField({
           <option value="yes">{lang === "ar" ? "نعم" : "Yes"}</option>
           <option value="no">{lang === "ar" ? "لا" : "No"}</option>
         </select>
-      </div>
+      </Field>
     );
   }
   if (def.control === "enum") {
     return (
-      <div className="flex items-center gap-2">
-        <span className="flex-1 text-sm">{label}</span>
+      <Field>
         <select
-          className="h-9 max-w-[10rem] rounded-md border border-input bg-background px-2 text-sm"
+          className={selectClass}
           value={(value as string) ?? ""}
           onChange={(e) => onChange(e.target.value || undefined)}
         >
@@ -134,7 +170,7 @@ function FilterField({
             <option key={o.value} value={o.value}>{lang === "ar" ? o.labelAr : o.labelEn}</option>
           ))}
         </select>
-      </div>
+      </Field>
     );
   }
   if (def.control === "numeric-range") {
@@ -145,14 +181,13 @@ function FilterField({
       onChange(Object.keys(cleaned).length ? cleaned : undefined);
     };
     return (
-      <div className="space-y-1">
-        <span className="text-sm">{label}</span>
+      <Field>
         <div className="flex items-center gap-1">
-          <Input type="number" className="h-9" placeholder={lang === "ar" ? "من" : "min"} value={v.min ?? ""} onChange={(e) => set({ min: e.target.value === "" ? undefined : Number(e.target.value) })} />
+          <Input type="number" className="h-9 min-w-0" placeholder={lang === "ar" ? "من" : "min"} value={v.min ?? ""} onChange={(e) => set({ min: e.target.value === "" ? undefined : Number(e.target.value) })} />
           <span className="text-muted-foreground">–</span>
-          <Input type="number" className="h-9" placeholder={lang === "ar" ? "إلى" : "max"} value={v.max ?? ""} onChange={(e) => set({ max: e.target.value === "" ? undefined : Number(e.target.value) })} />
+          <Input type="number" className="h-9 min-w-0" placeholder={lang === "ar" ? "إلى" : "max"} value={v.max ?? ""} onChange={(e) => set({ max: e.target.value === "" ? undefined : Number(e.target.value) })} />
         </div>
-      </div>
+      </Field>
     );
   }
   if (def.control === "date-range") {
@@ -163,18 +198,21 @@ function FilterField({
       onChange(Object.keys(cleaned).length ? cleaned : undefined);
     };
     return (
-      <div className="space-y-1">
-        <span className="text-sm">{label}</span>
+      <Field>
         <div className="flex items-center gap-1">
-          <Input type="date" className="h-9" value={v.from ?? ""} onChange={(e) => set({ from: e.target.value || undefined })} />
+          <Input type="date" className="h-9 min-w-0" value={v.from ?? ""} onChange={(e) => set({ from: e.target.value || undefined })} />
           <span className="text-muted-foreground">–</span>
-          <Input type="date" className="h-9" value={v.to ?? ""} onChange={(e) => set({ to: e.target.value || undefined })} />
+          <Input type="date" className="h-9 min-w-0" value={v.to ?? ""} onChange={(e) => set({ to: e.target.value || undefined })} />
         </div>
-      </div>
+      </Field>
     );
   }
   // multiselect
-  return <MultiSelectFilter screen={screen} def={def} value={(value as string[]) ?? []} onChange={onChange} label={label} />;
+  return (
+    <Field>
+      <MultiSelectFilter screen={screen} def={def} value={(value as string[]) ?? []} onChange={onChange} label={label} />
+    </Field>
+  );
 }
 
 function MultiSelectFilter({
@@ -215,12 +253,24 @@ function MultiSelectFilter({
   return (
     <Popover open={open} onOpenChange={(o) => { setOpen(o); if (!o) setSearch(""); }}>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" className="w-full justify-between font-normal">
-          <span className="truncate">{label}{value.length ? ` (${value.length})` : ""}</span>
-          <ChevronDown className="h-3 w-3 opacity-50" />
+        <Button
+          variant="outline"
+          className={cn("h-9 w-full justify-between px-2 font-normal", value.length > 0 && "border-primary/50")}
+        >
+          {/* The label now sits above the control, so the trigger reports the
+              SELECTION — otherwise the field read "Asset" with no way to see
+              what was picked without opening it. */}
+          <span className={cn("truncate", value.length === 0 && "text-muted-foreground")}>
+            {value.length === 0
+              ? lang === "ar" ? "الكل" : "Any"
+              : value.length === 1
+                ? (allOptions.find((o) => o.value === value[0])?.label ?? value[0])
+                : `${value.length} ${lang === "ar" ? "محدد" : "selected"}`}
+          </span>
+          <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-64 p-0">
+      <PopoverContent className="w-72 p-0" align="start">
         <div className="border-b p-2">
           <Input
             value={search}
