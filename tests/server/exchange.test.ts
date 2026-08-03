@@ -84,4 +84,18 @@ describe("workbook fidelity", () => {
     expect(getByHeader("_row_key")).toBe("abc123");
     expect(wb.getWorksheet("README")).toBeTruthy();
   });
+
+  it("exports an UNPROTECTED, filterable sheet (no password lock)", async () => {
+    const rows: ExportRow[] = [
+      { _row_key: "k1", ikcAssetId: "A1", assetName: "T", columnName: "email", pii_decision: "Yes", classification_decision: "CONFIDENTIAL" },
+    ];
+    const buffer = await generateWorkbook(rows, ["ikcAssetId", "assetName", "columnName", "pii_decision", "classification_decision"], 42, { exportedBy: "tester" });
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buffer as unknown as ArrayBuffer);
+    const sheet = wb.getWorksheet("Attributes")!;
+    // No sheet protection → the user can filter/sort/edit freely.
+    expect(sheet.sheetProtection?.sheet).not.toBe(true);
+    // Still has the filter row so the columns are filterable out of the box.
+    expect(sheet.autoFilter).toBeTruthy();
+  });
 });

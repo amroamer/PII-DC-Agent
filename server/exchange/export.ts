@@ -186,16 +186,14 @@ export async function generateWorkbook(
     sheet.getColumn(c.key).alignment = { readingOrder: "rtl", horizontal: "right" };
   }
 
-  // Lock everything; unlock the two decision columns + add data-validation dropdowns.
+  // Data-validation dropdowns on the two decision columns. The sheet is intentionally NOT
+  // protected — it stays fully filterable/sortable/editable. Re-import already ignores changes
+  // to read-only columns server-side, so no Excel-level lock is needed.
   const editableKeys = new Set(selected.filter((c) => c.editable).map((c) => c.key));
   sheet.eachRow((row, rowNumber) => {
-    row.eachCell((cell) => {
-      cell.protection = { locked: true };
-    });
     if (rowNumber === 1) return;
     for (const key of editableKeys) {
       const cell = row.getCell(key);
-      cell.protection = { locked: false };
       if (key === "pii_decision") {
         cell.dataValidation = { type: "list", allowBlank: true, formulae: ['"Yes,No,Uncertain"'] };
       } else if (key === "classification_decision") {
@@ -203,7 +201,6 @@ export async function generateWorkbook(
       }
     }
   });
-  await sheet.protect("pdtc", { selectLockedCells: true, selectUnlockedCells: true });
 
   // Assets sheet — one row per distinct asset in the exported set.
   const assetSheet = wb.addWorksheet("Assets");
@@ -239,7 +236,7 @@ export async function generateWorkbook(
     ["Exported by", meta.exportedBy],
     ["Generated", formatDateTime(new Date())],
     ["Editable columns", "PII Decision (Yes/No/Uncertain), Classification Decision (ISMS level)"],
-    ["Re-upload", "Upload this file on the Import page. Only the editable columns are applied; changes to locked columns are reported and ignored."],
+    ["Re-upload", "Upload this file on the Import page. Only the editable columns are applied; changes to read-only columns are reported and ignored."],
   ];
   readmeRows.forEach((r) => readme.addRow(r));
   readme.getColumn(1).font = { bold: true };
