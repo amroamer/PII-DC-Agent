@@ -44,7 +44,7 @@ const COLUMN_GROUPS: Record<string, { key: string; label: string }[]> = {
 
 const PRESETS: Record<string, string[]> = {
   "ikc-round-trip": ["ikcAssetId", "assetName", "columnName", "dataType", "nativeType", "selectedDataClassName", "columnDataClassification"],
-  "steward-review": ["ikcAssetId", "assetName", "columnName", "verdict", "criteriaMatched", "piiName", "confidence", "pii_decision", "classification_decision"],
+  "steward-review": ["ikcAssetId", "assetName", "columnName", "verdict", "criteriaMatched", "confidence", "overallRationaleEn", "piiName", "pii_decision", "classification_decision"],
   "full-export": Object.values(COLUMN_GROUPS).flat().map((c) => c.key),
 };
 
