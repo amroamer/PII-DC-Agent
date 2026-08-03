@@ -369,8 +369,8 @@ function KpiStrip({
     // Loading skeleton — keeps the strip visible instead of vanishing while the
     // aggregates load, which on large catalogs used to make the KPIs look gone.
     return (
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
-        {Array.from({ length: 7 }).map((_, i) => (
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        {Array.from({ length: 6 }).map((_, i) => (
           <div key={i} className="h-16 animate-pulse rounded-lg border bg-muted/40" />
         ))}
       </div>
@@ -379,20 +379,23 @@ function KpiStrip({
   const n = (k: string) => Number(kpis[k] ?? 0);
   const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) : 0);
 
+  // A closed census, verifiable by eye:
+  //   PII + Not PII + Uncertain = Analysed ;  Analysed + Not analysed = Total
+  //
+  // Every tile honours the active filters EXCEPT the verdict facet. The verdict
+  // tiles ARE the verdict filter — if they collapsed when clicked you could not
+  // click across to another one, and you would lose the denominator that makes
+  // the number mean anything.
+  const scope = n("coverageScope");
   const cards =
     screen === "attributes"
       ? [
-          { label: lang === "ar" ? "في العرض" : "In view", value: `${n("inView")}`, sub: `${lang === "ar" ? "من" : "of"} ${n("total")}` },
-          { label: "PII", value: `${n("pii")}`, sub: `${pct(n("pii"), n("analysed"))}%`, apply: () => onApply("verdict", ["pii"]) },
-          { label: lang === "ar" ? "فئة خاصة" : "Special", value: `${n("specialCategory")}`, apply: () => onApply("specialCategory", true) },
-          // Coverage, measured over the filters MINUS the verdict facet, so the
-          // two numbers always sum to the selected catalog. Scoped to the
-          // verdict-filtered view it was circular — picking pii/not_pii/uncertain
-          // excludes un-analysed columns by construction, so it read "0 never".
-          { label: lang === "ar" ? "محلّلة" : "Analysed", value: `${n("analysed")}`, sub: `${n("notAnalysed")} ${lang === "ar" ? "لم تُحلّل" : "never"}` },
-          { label: lang === "ar" ? "معلّقة" : "Pending", value: `${n("pendingReview")}`, apply: () => onApply("reviewStatus", "pending") },
-          { label: lang === "ar" ? "غير مؤكد" : "Uncertain", value: `${n("uncertain")}`, apply: () => onApply("verdict", ["uncertain"]) },
-          { label: lang === "ar" ? "متوسط الثقة" : "Avg conf.", value: `${Math.round(n("avgConfidence") * 100)}%`, sub: `${n("belowThreshold")} ${lang === "ar" ? "دون العتبة" : "below"}` },
+          { label: lang === "ar" ? "إجمالي السمات" : "Total attributes", value: `${scope}`, sub: scope < n("total") ? `${lang === "ar" ? "من" : "of"} ${n("total")}` : undefined, apply: () => onApply("verdict", undefined) },
+          { label: lang === "ar" ? "محلّلة" : "Analysed", value: `${n("analysed")}`, sub: `${pct(n("analysed"), scope)}%`, apply: () => onApply("verdict", ["pii", "not_pii", "uncertain"]) },
+          { label: lang === "ar" ? "غير محلّلة" : "Not analysed", value: `${n("notAnalysed")}`, sub: `${pct(n("notAnalysed"), scope)}%`, apply: () => onApply("verdict", ["not_analysed"]) },
+          { label: lang === "ar" ? "بيانات شخصية" : "PII", value: `${n("pii")}`, sub: `${pct(n("pii"), n("analysed"))}% ${lang === "ar" ? "من المحلّلة" : "of analysed"}`, apply: () => onApply("verdict", ["pii"]) },
+          { label: lang === "ar" ? "غير شخصية" : "Not PII", value: `${n("notPii")}`, sub: `${pct(n("notPii"), n("analysed"))}%`, apply: () => onApply("verdict", ["not_pii"]) },
+          { label: lang === "ar" ? "غير مؤكد" : "Uncertain", value: `${n("uncertain")}`, sub: `${pct(n("uncertain"), n("analysed"))}%`, apply: () => onApply("verdict", ["uncertain"]) },
         ]
       : [
           { label: lang === "ar" ? "في العرض" : "In view", value: `${n("inView")}`, sub: `${lang === "ar" ? "من" : "of"} ${n("total")}` },
@@ -406,11 +409,38 @@ function KpiStrip({
   const classDist = kpis.classificationDistribution ?? {};
   const classTotal = Object.values(classDist).reduce((s, v) => s + v, 0);
   const critDist = kpis.criteriaDistribution ?? {};
-  const critMax = Math.max(1, ...Object.values(critDist));
+  // Criteria never scored by any run are permanently 0 — three of five lines on
+  // this catalog. Show only what the runs actually assessed.
+  const scoredCriteria = Object.entries(critDist).filter(([, v]) => v > 0);
+  const critMax = Math.max(1, ...scoredCriteria.map(([, v]) => v));
+
+  /**
+   * Contradictions, not counts: each is something true of the catalog that
+   * should not be. Rendered only when non-zero, so the row never becomes a line
+   * of permanent noughts the way the old Special / Pending tiles did.
+   */
+  const risks = screen !== "attributes" ? [] : [
+    {
+      value: n("piiClassifiedOpen"),
+      label: lang === "ar" ? "شخصية لكن مصنّفة \"مفتوح\"" : "Personal but classified OPEN",
+      apply: () => { onApply("verdict", ["pii"]); onApply("columnDataClassification", ["OPEN"]); },
+    },
+    {
+      value: n("tablesPiiUnflagged"),
+      label: lang === "ar"
+        ? `جدولاً يحتوي بيانات شخصية دون علامة على الأصل (من ${n("tablesWithPii")})`
+        : `tables hold PII with no asset flag (of ${n("tablesWithPii")})`,
+    },
+    {
+      value: n("lowConfidencePii"),
+      label: lang === "ar" ? "نتيجة شخصية بثقة منخفضة" : "low-confidence PII calls",
+      apply: () => { onApply("verdict", ["pii"]); onApply("engineConfidence", { max: 0.75 }); },
+    },
+  ].filter((r) => r.value > 0);
 
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {cards.map((c) => (
           <Card key={c.label} className={cn(c.apply && "cursor-pointer transition-colors hover:border-primary/50")} onClick={c.apply}>
             <CardContent className="py-3">
@@ -420,6 +450,27 @@ function KpiStrip({
           </Card>
         ))}
       </div>
+
+      {risks.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border border-warning/40 bg-warning/5 px-3 py-2">
+          <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-warning">
+            <TriangleAlert className="h-3.5 w-3.5" />
+            {lang === "ar" ? "يحتاج انتباهاً" : "Needs attention"}
+          </span>
+          {risks.map((r) => (
+            <button
+              key={r.label}
+              type="button"
+              onClick={r.apply}
+              disabled={!r.apply}
+              className={cn("text-sm", r.apply && "hover:underline")}
+            >
+              <span className="font-semibold tabular-nums">{r.value}</span>{" "}
+              <span className="text-muted-foreground">{r.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="grid gap-3 md:grid-cols-2">
         {classTotal > 0 && (
@@ -434,12 +485,12 @@ function KpiStrip({
             </CardContent>
           </Card>
         )}
-        {screen === "attributes" && Object.keys(critDist).length > 0 && (
+        {screen === "attributes" && scoredCriteria.length > 0 && (
           <Card>
             <CardContent className="py-3">
               <p className="mb-1.5 text-xs font-medium text-muted-foreground">{lang === "ar" ? "توزيع المعايير" : "Criteria distribution"}</p>
               <div className="space-y-1">
-                {Object.entries(critDist).map(([code, v]) => (
+                {scoredCriteria.map(([code, v]) => (
                   <button key={code} type="button" onClick={() => onApply("criterion", [code])} className="flex w-full items-center gap-2 text-[11px]">
                     <span className="w-28 shrink-0 truncate text-start text-muted-foreground">{code}</span>
                     <span className="h-2 rounded bg-primary" style={{ width: `${(v / critMax) * 100}%`, minWidth: v > 0 ? "4px" : 0 }} />

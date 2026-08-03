@@ -39,14 +39,19 @@ export async function getAttributeKpis(filters: FilterState) {
       total,
       tablesTotal,
       tablesAnalysed: 0,
-      pii: 0,
-      specialCategory: 0,
+      coverageScope: coverageIds.length,
       analysed: 0,
       notAnalysed: coverageIds.length,
-      coverageScope: coverageIds.length,
+      pii: 0,
+      notPii: 0,
+      uncertain: 0,
+      piiClassifiedOpen: 0,
+      tablesWithPii: 0,
+      tablesPiiUnflagged: 0,
+      lowConfidencePii: 0,
+      specialCategory: 0,
       conflicts: 0,
       pendingReview: 0,
-      uncertain: 0,
       avgConfidence: 0,
       belowThreshold: 0,
       criteriaDistribution: Object.fromEntries(CRITERION_CODES.map((c) => [c, 0])),
@@ -63,7 +68,25 @@ export async function getAttributeKpis(filters: FilterState) {
   const clsScope = scopeAll ? sql`true` : inArray(classifications.targetId, ids);
   const rvScope = scopeAll ? sql`true` : inArray(reviewItems.targetId, ids);
 
-  const [verdictRows, criterionRows, levelRows, confRows, analysed, pendingReview, tablesAnalysed, conflicts] = await Promise.all([
+  // The census is measured over the COVERAGE scope (filters minus verdict) and
+  // one row per attribute — its LATEST detection. Counting "any detection with
+  // this verdict" would double-count an attribute re-scored to a different
+  // verdict by a later run, and the six tiles are meant to be a closed
+  // partition a steward can verify by eye:
+  //     pii + not_pii + uncertain = analysed ;  analysed + never = total
+  const coverageSql = coverageIds.length >= total ? sql`true` : inArray(detections.attributeId, coverageIds);
+  // NB: no table alias — `coverageSql` is a drizzle predicate that renders
+  // "detections"."attribute_id", which an alias would put out of scope.
+  const censusPromise = db.execute<{ verdict: string; n: number }>(sql`
+    SELECT verdict, count(*)::int AS n FROM (
+      SELECT DISTINCT ON (detections.attribute_id) detections.attribute_id, detections.verdict
+      FROM detections
+      WHERE ${coverageSql}
+      ORDER BY detections.attribute_id, detections.created_at DESC, detections.id DESC
+    ) latest GROUP BY verdict
+  `);
+
+  const [verdictRows, criterionRows, levelRows, confRows, census, pendingReview, tablesAnalysed, conflicts] = await Promise.all([
     db.select({ verdict: detections.verdict, n: sql<number>`count(distinct ${detections.attributeId})::int` }).from(detections).where(detScope).groupBy(detections.verdict),
     db.select({ criterion: detections.criterionCode, n: sql<number>`count(distinct ${detections.attributeId})::int` }).from(detections).where(detScope).groupBy(detections.criterionCode),
     db.select({ level: classifications.levelCode, n: sql<number>`count(distinct ${classifications.targetId})::int` }).from(classifications).where(and(eq(classifications.scope, "attribute"), isNull(classifications.supersededBy), clsScope)).groupBy(classifications.levelCode),
@@ -71,14 +94,7 @@ export async function getAttributeKpis(filters: FilterState) {
     // `pii` it read 0% whenever the view had no PII findings — filtering to
     // "uncertain" showed "Avg conf. 0%" beside a table of 60-95% rows.
     db.select({ avg: sql<number>`coalesce(avg(${detections.confidence}), 0)::float`, below: sql<number>`count(*) filter (where ${detections.confidence} < ${threshold})::int` }).from(detections).where(detScope),
-    // Analysed is measured over the COVERAGE scope, so the pair (analysed,
-    // never) always sums to the columns matching the non-verdict filters.
-    scalar(
-      db
-        .select({ n: sql<number>`count(distinct ${detections.attributeId})::int` })
-        .from(detections)
-        .where(coverageIds.length >= total ? sql`true` : inArray(detections.attributeId, coverageIds)),
-    ),
+    censusPromise,
     scalar(db.select({ n: sql<number>`count(*)::int` }).from(reviewItems).where(and(eq(reviewItems.targetType, "attribute"), eq(reviewItems.status, "pending"), rvScope))),
     // Tables (assets) with at least one analysed column.
     scalar(db.select({ n: sql<number>`count(distinct ${attributes.assetId})::int` }).from(attributes).innerJoin(detections, eq(detections.attributeId, attributes.id)).where(scopeAll ? sql`true` : inArray(attributes.id, ids))),
@@ -88,6 +104,45 @@ export async function getAttributeKpis(filters: FilterState) {
 
   const byVerdict: Record<string, number> = {};
   for (const r of verdictRows) byVerdict[r.verdict] = r.n;
+
+  // --- census (closed partition over the coverage scope) --------------------
+  const byLatestVerdict: Record<string, number> = { pii: 0, not_pii: 0, uncertain: 0 };
+  for (const r of (census.rows ?? []) as Array<{ verdict: string; n: number }>) {
+    byLatestVerdict[r.verdict] = Number(r.n);
+  }
+  const analysed = byLatestVerdict.pii + byLatestVerdict.not_pii + byLatestVerdict.uncertain;
+
+  /**
+   * Risk signals shown beneath the census. Each is a governance CONTRADICTION
+   * rather than a count — something that is true of the catalog and should not
+   * be. Measured over the coverage scope on each attribute's latest detection.
+   */
+  const riskRes = await db.execute<{
+    pii_open: number;
+    tables_with_pii: number;
+    tables_pii_unflagged: number;
+    low_confidence_pii: number;
+  }>(sql`
+    WITH latest AS (
+      SELECT DISTINCT ON (detections.attribute_id) detections.attribute_id, detections.verdict, detections.confidence
+      FROM detections
+      WHERE ${coverageSql}
+      ORDER BY detections.attribute_id, detections.created_at DESC, detections.id DESC
+    ), pii AS (
+      SELECT l.attribute_id, l.confidence, a.asset_id, a.column_data_classification, s.pii_flag
+      FROM latest l
+      JOIN attributes a ON a.id = l.attribute_id
+      JOIN assets s ON s.id = a.asset_id
+      WHERE l.verdict = 'pii'
+    )
+    SELECT
+      count(*) FILTER (WHERE column_data_classification = 'OPEN')::int      AS pii_open,
+      count(DISTINCT asset_id)::int                                          AS tables_with_pii,
+      count(DISTINCT asset_id) FILTER (WHERE pii_flag = false)::int          AS tables_pii_unflagged,
+      count(*) FILTER (WHERE confidence < ${threshold + 0.15})::int          AS low_confidence_pii
+    FROM pii
+  `);
+  const risk = ((riskRes.rows ?? [])[0] ?? {}) as Record<string, number | null>;
 
   const criteriaDistribution: Record<string, number> = {};
   for (const code of CRITERION_CODES) criteriaDistribution[code] = 0;
@@ -130,15 +185,23 @@ export async function getAttributeKpis(filters: FilterState) {
     total,
     tablesTotal,
     tablesAnalysed,
-    /** Columns matching the filters ignoring verdict — `analysed + notAnalysed`. */
+    // --- the census: these six ALWAYS balance ------------------------------
+    /** Columns matching the filters ignoring verdict — the census denominator. */
     coverageScope: coverageIds.length,
-    notAnalysed: Math.max(0, coverageIds.length - analysed),
-    pii: byVerdict.pii ?? 0,
-    specialCategory: criteriaDistribution.SPECIAL_CATEGORY ?? 0,
     analysed,
+    notAnalysed: Math.max(0, coverageIds.length - analysed),
+    pii: byLatestVerdict.pii,
+    notPii: byLatestVerdict.not_pii,
+    uncertain: byLatestVerdict.uncertain,
+    // --- risk signals -------------------------------------------------------
+    piiClassifiedOpen: Number(risk.pii_open ?? 0),
+    tablesWithPii: Number(risk.tables_with_pii ?? 0),
+    tablesPiiUnflagged: Number(risk.tables_pii_unflagged ?? 0),
+    lowConfidencePii: Number(risk.low_confidence_pii ?? 0),
+    // --- retained for other consumers --------------------------------------
+    specialCategory: criteriaDistribution.SPECIAL_CATEGORY ?? 0,
     conflicts,
     pendingReview,
-    uncertain: byVerdict.uncertain ?? 0,
     avgConfidence: Number((confRows[0]?.avg ?? 0).toFixed(3)),
     belowThreshold: confRows[0]?.below ?? 0,
     criteriaDistribution,
