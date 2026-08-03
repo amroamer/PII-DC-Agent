@@ -124,6 +124,7 @@ export const ASSET_FILTERS: FilterDefinition[] = [
   { key: "ikcAssetId", labelEn: "Asset Id", labelAr: "معرّف الأصل", group: "identity", control: "text" },
   { key: "name", labelEn: "Name", labelAr: "الاسم", group: "identity", control: "text" },
   { key: "assetType", labelEn: "Asset Type", labelAr: "نوع الأصل", group: "identity", control: "multiselect", optionsSource: "distinct" },
+  { key: "importBatch", labelEn: "Import", labelAr: "الاستيراد", group: "identity", control: "multiselect", optionsSource: "distinct" },
   { key: "catalogId", labelEn: "Catalog Id", labelAr: "معرّف الكتالوج", group: "identity", control: "multiselect", optionsSource: "distinct" },
 
   { key: "businessDomain", labelEn: "Business Domain", labelAr: "المجال التجاري", group: "business", control: "multiselect", optionsSource: "distinct" },
@@ -182,6 +183,9 @@ export const ATTRIBUTE_FILTERS: FilterDefinition[] = [
   { key: "search", labelEn: "Search", labelAr: "بحث", group: "identity", control: "text" },
   { key: "columnName", labelEn: "Column Name", labelAr: "اسم العمود", group: "identity", control: "text" },
   { key: "assetId", labelEn: "Asset", labelAr: "الأصل", group: "identity", control: "multiselect", optionsSource: "distinct" },
+  // Which IKC import the column came from. The only reliable old-catalog /
+  // new-catalog split: both share table-name prefixes and some table names.
+  { key: "importBatch", labelEn: "Import", labelAr: "الاستيراد", group: "identity", control: "multiselect", optionsSource: "distinct" },
   { key: "businessDomain", labelEn: "Business Domain", labelAr: "المجال التجاري", group: "business", control: "multiselect", optionsSource: "distinct" },
   { key: "verdict", labelEn: "PII verdict", labelAr: "قرار البيانات الشخصية", group: "pii", control: "multiselect", optionsSource: "static", staticOptions: VERDICT_OPTIONS },
   { key: "criterion", labelEn: "Matched criterion", labelAr: "المعيار المطابق", group: "pii", control: "multiselect", optionsSource: "static", staticOptions: CRITERION_OPTIONS },

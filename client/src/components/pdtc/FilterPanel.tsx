@@ -193,13 +193,15 @@ function MultiSelectFilter({
   const { lang } = useLanguage();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const distinctQuery = useQuery<Array<{ value: string; count: number }>>({
+  const distinctQuery = useQuery<Array<{ value: string; count: number; label?: string }>>({
     queryKey: [`/api/catalog/filter-options?screen=${screen}&key=${def.key}`],
     enabled: open && def.optionsSource === "distinct",
   });
   const allOptions = def.optionsSource === "static"
     ? (def.staticOptions ?? []).map((o) => ({ value: o.value, label: lang === "ar" ? o.labelAr : o.labelEn }))
-    : (distinctQuery.data ?? []).map((o) => ({ value: o.value, label: `${o.value} (${o.count})` }));
+    // `label` wins where the stored value is an opaque id (import batch), so the
+    // picker shows the source file rather than a row number.
+    : (distinctQuery.data ?? []).map((o) => ({ value: o.value, label: `${o.label ?? o.value} (${o.count})` }));
   const q = search.trim().toLowerCase();
   const options = q
     ? allOptions.filter((o) => o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q))

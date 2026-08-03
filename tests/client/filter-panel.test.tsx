@@ -107,8 +107,12 @@ describe("<FilterPanel /> — attribute filters", () => {
   });
 
   it("keeps the default set small enough to read at a glance", () => {
+    // Deliberately tight: the panel renders in three columns and must not need
+    // scrolling. Raising this bound should be a decision, not a side effect —
+    // it went 12 -> 13 when the Import (old vs new catalog) filter was added.
     const defaults = ATTRIBUTE_FILTERS.filter((d) => !d.advanced);
-    expect(defaults.length).toBeLessThanOrEqual(12);
+    expect(defaults.length).toBeLessThanOrEqual(13);
     expect(defaults.map((d) => d.key)).toContain("verdict");
+    expect(defaults.map((d) => d.key)).toContain("importBatch");
   });
 });

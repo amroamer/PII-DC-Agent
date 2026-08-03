@@ -14,6 +14,7 @@ import {
   criterionAssessments,
   detections,
   exportBatches,
+  ingestRuns,
   runItems,
 } from "@shared/models/schema";
 import { CRITERION_CODES } from "@shared/lib/criteria";
@@ -88,6 +89,16 @@ export async function buildAttributeExportRows(ids: number[]): Promise<ExportRow
     if (!prev || d.id > prev.id) latestDet.set(d.attributeId, d);
   }
 
+  // Source import per column. Without it an export that mixes two IKC loads is
+  // indistinguishable — the catalogs share table-name prefixes and some names.
+  const ingestRunIds = [...new Set(attrs.map((a) => a.ingestRunId).filter((x): x is number => x != null))];
+  const ingestRows = ingestRunIds.length
+    ? await db.select().from(ingestRuns).where(inArray(ingestRuns.id, ingestRunIds))
+    : [];
+  const ingestLabel = new Map(
+    ingestRows.map((r) => [r.id, `${r.filename} · ${r.startedAt.toISOString().slice(0, 10)}`]),
+  );
+
   return attrs.map((attr) => {
     const asset = assetMap.get(attr.assetId);
     const item = latestItem.get(attr.id);
@@ -101,6 +112,7 @@ export async function buildAttributeExportRows(ids: number[]): Promise<ExportRow
       ikcAssetId: asset?.ikcAssetId ?? "",
       assetName: asset?.name ?? "",
       columnName: attr.columnName,
+      importBatch: attr.ingestRunId != null ? ingestLabel.get(attr.ingestRunId) ?? String(attr.ingestRunId) : "",
       catalogId: asset?.catalogId ?? "",
       businessDomain: (asset?.businessDomain ?? []).join("; "),
       subjectArea: (asset?.subjectArea ?? []).join("; "),

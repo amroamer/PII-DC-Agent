@@ -149,6 +149,7 @@ function assetConditions(filters: FilterState): SQL[] {
   if (arr(f.tableSchema).length) c.push(inArray(assets.tableSchema, arr(f.tableSchema)));
   if (arr(f.connectionId).length) c.push(inArray(assets.connectionId, arr(f.connectionId)));
   if (arr(f.backupFrequency).length) c.push(inArray(assets.backupFrequency, arr(f.backupFrequency)));
+  if (arr(f.importBatch).length) c.push(inArray(assets.ingestRunId, arr(f.importBatch).map(Number)));
   c.push(numRange(assets.numColumns, f.numColumns));
   c.push(numRange(assets.numChildren, f.numChildren));
   c.push(numRange(assets.qualityScore, f.qualityScore));
@@ -260,6 +261,9 @@ function attributeConditions(filters: FilterState): SQL[] {
   if (arr(f.assetId).length) c.push(inArray(assets.name, arr(f.assetId)));
   if (arr(f.dataType).length) c.push(inArray(attributes.dataType, arr(f.dataType)));
   if (arr(f.nativeType).length) c.push(inArray(attributes.nativeType, arr(f.nativeType)));
+  // Which IKC import a column came from — the practical "old catalog vs new
+  // catalog" split, since both share table-name prefixes and even table names.
+  if (arr(f.importBatch).length) c.push(inArray(attributes.ingestRunId, arr(f.importBatch).map(Number)));
   c.push(tristate(attributes.nullable, f.nullable));
   c.push(tristate(attributes.isPrimaryKey, f.isPrimaryKey));
   c.push(tristate(attributes.cdeFlag, f.cdeFlag));
@@ -581,7 +585,18 @@ const ATTR_ASSET_JOIN_KEYS = new Set([
   "assetType",
 ]);
 
-const distinctCache = new Map<string, { value: string; count: number }[]>();
+/**
+ * `label` overrides what the picker shows for an option. Needed where the stored
+ * value is an opaque id — an import batch is a row id, but a steward needs to see
+ * the source file and date to know which catalog they are selecting.
+ */
+export interface DistinctOption {
+  value: string;
+  count: number;
+  label?: string;
+}
+
+const distinctCache = new Map<string, DistinctOption[]>();
 
 export function invalidateDistinctCache(): void {
   distinctCache.clear();
@@ -633,6 +648,26 @@ export async function distinctOptions(screen: CatalogScreen, key: string) {
   if (screen === "attributes" && RAW_OPTION_SQL[key]) {
     const rows = await db.execute(RAW_OPTION_SQL[key]);
     const result = (rows.rows as Array<{ value: string; count: number }>).map((r) => ({ value: String(r.value), count: Number(r.count) }));
+    distinctCache.set(cacheKey, result);
+    return result;
+  }
+
+  // Import batch — the only reliable way to tell one loaded catalog from another.
+  // Labelled with the source file and date because the stored value is a row id.
+  if (key === "importBatch") {
+    const q =
+      screen === "attributes"
+        ? sql`SELECT ir.id::text AS value, count(a.id)::int AS count, ir.filename, ir.started_at
+              FROM ingest_runs ir JOIN attributes a ON a.ingest_run_id = ir.id
+              GROUP BY ir.id, ir.filename, ir.started_at ORDER BY ir.started_at DESC`
+        : sql`SELECT ir.id::text AS value, count(s.id)::int AS count, ir.filename, ir.started_at
+              FROM ingest_runs ir JOIN assets s ON s.ingest_run_id = ir.id
+              GROUP BY ir.id, ir.filename, ir.started_at ORDER BY ir.started_at DESC`;
+    const rows = await db.execute(q);
+    const result = (rows.rows as Array<{ value: string; count: number; filename: string; started_at: string | Date }>).map((r) => {
+      const date = new Date(r.started_at).toISOString().slice(0, 10);
+      return { value: String(r.value), count: Number(r.count), label: `${r.filename} · ${date}` };
+    });
     distinctCache.set(cacheKey, result);
     return result;
   }

@@ -55,6 +55,7 @@ export const EXPORT_COLUMNS: ExportColumnDef[] = [
   { key: "selectedDataClassConfidence", header: "Class Confidence", category: "Data Classes & Terms" },
   { key: "suggestedClasses", header: "Suggested Classes", category: "Data Classes & Terms" },
   // Governance
+  { key: "importBatch", header: "Source Import", category: "Governance" },
   { key: "columnDataClassification", header: "Classification", category: "Governance" },
   { key: "retentionPeriod", header: "Retention", category: "Governance" },
   { key: "storage", header: "Storage", category: "Governance" },
@@ -88,7 +89,9 @@ export const EXPORT_COLUMNS: ExportColumnDef[] = [
 
 export const EXPORT_PRESETS: Record<string, string[]> = {
   "ikc-round-trip": ["ikcAssetId", "assetName", "columnName", "dataType", "nativeType", "selectedDataClassName", "columnDataClassification"],
-  "steward-review": ["ikcAssetId", "assetName", "columnName", "verdict", "criteriaMatched", "piiName", "confidence", "pii_decision", "classification_decision"],
+  // Source Import included so a reviewer can tell which catalog load a row came
+  // from — the two IKC loads share table-name prefixes and even table names.
+  "steward-review": ["ikcAssetId", "assetName", "columnName", "importBatch", "verdict", "criteriaMatched", "piiName", "confidence", "pii_decision", "classification_decision"],
   "full-export": EXPORT_COLUMNS.map((c) => c.key),
 };
 
