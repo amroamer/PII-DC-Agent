@@ -16,6 +16,7 @@ import {
 } from "@shared/models/schema";
 import { getSetting } from "../reference-cache";
 import type { CriterionCode } from "@shared/lib/criteria";
+import { compareByAttention } from "@shared/lib/detection-view";
 import { mergeSignals, detectionToSignal, type MergedDecision } from "./merge";
 
 export async function getLatestRunId(): Promise<string | null> {
@@ -33,6 +34,8 @@ export interface ResultFilters {
   verdict?: DetectionVerdict;
   minConfidence?: number;
   assetId?: number;
+  /** Free-text match over column name, asset name and rationale. */
+  search?: string;
 }
 
 export interface DetectionResultRow {
@@ -75,6 +78,8 @@ export async function getResults(filters: ResultFilters): Promise<DetectionResul
     byAttribute.set(row.attributeId, list);
   }
 
+  const search = filters.search?.trim().toLowerCase();
+
   const results: DetectionResultRow[] = [];
   for (const [attributeId, layers] of byAttribute) {
     const attribute = attrMap.get(attributeId);
@@ -87,17 +92,27 @@ export async function getResults(filters: ResultFilters): Promise<DetectionResul
     if (filters.minConfidence != null && merged.confidence < filters.minConfidence) continue;
     if (filters.assetId != null && attribute.assetId !== filters.assetId) continue;
 
+    const assetName = asset?.name ?? "(unknown asset)";
+    if (search) {
+      const haystack = [attribute.columnName, assetName, merged.dataClassCode, merged.rationaleEn]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      if (!haystack.includes(search)) continue;
+    }
+
     results.push({
       attributeId,
       columnName: attribute.columnName,
       assetId: attribute.assetId,
-      assetName: asset?.name ?? "(unknown asset)",
+      assetName,
       merged,
       layers,
     });
   }
 
-  results.sort((a, b) => b.merged.confidence - a.merged.confidence);
+  // Attention-first, not confidence-first: see shared/lib/detection-view.ts.
+  results.sort((a, b) => compareByAttention(a.merged, b.merged) || a.columnName.localeCompare(b.columnName));
   return results;
 }
 

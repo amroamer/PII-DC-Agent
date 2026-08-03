@@ -77,6 +77,28 @@ export async function getAttributeKpis(filters: FilterState) {
     classificationDistribution[r.level] = r.n;
     classified += r.n;
   }
+  // Attributes with no engine/steward classification row still carry the level
+  // imported from IKC, which is what the table's Classification column renders.
+  // Counting only `classifications` rows made the bar read 100% UNCLASSIFIED on
+  // an imported catalog whose every row displayed a level.
+  if (classified < ids.length) {
+    const importedRows = await db
+      .select({ level: attributes.columnDataClassification, n: sql<number>`count(*)::int` })
+      .from(attributes)
+      .where(
+        and(
+          scopeAll ? sql`true` : inArray(attributes.id, ids),
+          sql`${attributes.columnDataClassification} IS NOT NULL`,
+          sql`NOT EXISTS (SELECT 1 FROM classifications cl WHERE cl.scope = 'attribute' AND cl.target_id = ${attributes.id} AND cl.superseded_by IS NULL)`,
+        ),
+      )
+      .groupBy(attributes.columnDataClassification);
+    for (const r of importedRows) {
+      if (!r.level) continue;
+      classificationDistribution[r.level] = (classificationDistribution[r.level] ?? 0) + r.n;
+      classified += r.n;
+    }
+  }
   classificationDistribution.UNCLASSIFIED = Math.max(0, ids.length - classified);
 
   return {

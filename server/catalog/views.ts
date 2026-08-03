@@ -52,8 +52,11 @@ export async function deleteSavedView(id: number, userId: number | null): Promis
 }
 
 // --- per-user column visibility -------------------------------------------
+// v2: the attribute column set changed (PII type / criterion / confidence / why),
+// so prefs saved against the old set would hide the new columns from anyone who
+// had ever touched the picker. Bumping the key resets to the defaults once.
 function columnPrefKey(userId: number | null, screen: string): string {
-  return `columns:${userId ?? "anon"}:${screen}`;
+  return `columns:${userId ?? "anon"}:v2:${screen}`;
 }
 
 export async function getColumnPrefs(userId: number | null, screen: string): Promise<string[] | null> {

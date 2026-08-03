@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ChevronDown, Columns3, Download, Filter as FilterIcon, Radar, Search, Tag, Trash2, X } from "lucide-react";
+import { ChevronDown, Columns3, Download, Filter as FilterIcon, Radar, Search, Tag, Trash2, TriangleAlert, X } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useLanguage } from "@/hooks/useLanguage";
 import { useToast } from "@/hooks/use-toast";
@@ -10,6 +10,7 @@ import {
   FILTERS_BY_SCREEN,
   type CatalogScreen as Screen,
 } from "@shared/lib/filter-defs";
+import { displayPiiType, isConfidenceNotable, oneLine } from "@shared/lib/detection-view";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -29,6 +30,9 @@ import { EngineWizard } from "./EngineWizard";
 import { ExportDialog } from "./ExportDialog";
 import { AssetImport } from "./AssetImport";
 import { ClassificationBadge } from "./ClassificationBadge";
+import { CriterionBadge } from "./CriterionBadge";
+import { ConfidenceBar } from "./ConfidenceBar";
+import { VerdictPill } from "./Pill";
 import { Modal } from "./Modal";
 import { AssetDetailDrawer } from "./AssetDetailDrawer";
 import { AttributeDetailDrawer } from "./AttributeDetailDrawer";
@@ -79,12 +83,17 @@ export function CatalogScreen({ screen }: { screen: Screen }) {
   const columns = useMemo(() => columnsFor(screen), [screen]);
   const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
 
-  // Per-user column visibility (§2.3).
+  // Per-user column visibility (§2.3). Until prefs are saved, columns marked
+  // defaultHidden stay out of the way.
   const colPrefsQuery = useQuery<{ columns: string[] | null }>({ queryKey: [`/api/settings/columns?screen=${screen}`] });
-  const [hiddenCols, setHiddenCols] = useState<Set<string>>(new Set());
+  const [hiddenCols, setHiddenCols] = useState<Set<string>>(() => new Set(columnsFor(screen).filter((c) => c.defaultHidden).map((c) => c.key)));
   useEffect(() => {
     const saved = colPrefsQuery.data?.columns;
-    if (saved) setHiddenCols(new Set(columns.map((c) => c.key).filter((k) => !saved.includes(k))));
+    setHiddenCols(
+      saved
+        ? new Set(columns.map((c) => c.key).filter((k) => !saved.includes(k)))
+        : new Set(columns.filter((c) => c.defaultHidden).map((c) => c.key)),
+    );
   }, [colPrefsQuery.data, columns]);
   const visibleColumns = columns.filter((c) => !hiddenCols.has(c.key));
 
@@ -456,8 +465,12 @@ interface CatalogColumn {
   header: string;
   headerAr: string;
   sortable?: boolean;
+  /** Hidden until the user opts in via the Columns picker (no saved prefs yet). */
+  defaultHidden?: boolean;
   render?: (row: Record<string, unknown>) => React.ReactNode;
 }
+
+const dash = <span className="text-muted-foreground">—</span>;
 
 function columnsFor(screen: Screen): CatalogColumn[] {
   if (screen === "assets") {
@@ -470,11 +483,103 @@ function columnsFor(screen: Screen): CatalogColumn[] {
       { key: "piiFlag", header: "PII", headerAr: "شخصية", render: (r) => (r.piiFlag ? <Badge variant="destructive">PII</Badge> : "—") },
     ];
   }
+  // Attribute columns lead with what actually varies row to row — the PII type,
+  // the criterion behind the call, and the engine's reasoning. Data type and CDE
+  // are constant across most catalogs, so they start hidden.
   return [
-    { key: "columnName", header: "Column", headerAr: "العمود", sortable: true, render: (r) => <span className="font-medium">{String(r.columnName)}</span> },
-    { key: "assetName", header: "Asset", headerAr: "الأصل", sortable: true },
-    { key: "dataType", header: "Type", headerAr: "النوع", sortable: true },
+    {
+      key: "columnName",
+      header: "Column",
+      headerAr: "العمود",
+      sortable: true,
+      render: (r) => (
+        <div>
+          <p className="font-medium">{String(r.columnName)}</p>
+          <p className="text-xs text-muted-foreground">{String(r.assetName ?? "")}</p>
+        </div>
+      ),
+    },
+    {
+      key: "piiType",
+      header: "PII type",
+      headerAr: "نوع البيانات الشخصية",
+      sortable: true,
+      // Only worth a column where the catalog carries real data classes — on an
+      // IKC import that is mostly "NoClassDetected" it renders as dashes. Opt in
+      // from the Columns picker.
+      defaultHidden: true,
+      render: (r) => {
+        const label = displayPiiType({
+          verdict: (r.verdict as any) ?? null,
+          piiName: r.piiName as string | null,
+          dataClassCode: r.dataClassCode as string | null,
+          criterion: r.criterion as string | null,
+          selectedDataClassName: r.selectedDataClassName as string | null,
+        });
+        return label ? <span className="text-sm">{label}</span> : dash;
+      },
+    },
+    {
+      key: "verdict",
+      header: "Verdict",
+      headerAr: "الحكم",
+      render: (r) =>
+        r.verdict ? (
+          <div className="flex items-center gap-1.5">
+            <VerdictPill verdict={r.verdict as any} />
+            {r.conflict ? <TriangleAlert className="h-4 w-4 text-warning" /> : null}
+          </div>
+        ) : (
+          dash
+        ),
+    },
+    {
+      key: "criterion",
+      header: "Criterion",
+      headerAr: "المعيار",
+      sortable: true,
+      render: (r) => (r.criterion ? <CriterionBadge code={r.criterion as any} /> : dash),
+    },
+    {
+      key: "confidence",
+      header: "Confidence",
+      headerAr: "الثقة",
+      sortable: true,
+      render: (r) => {
+        if (typeof r.confidence !== "number") return dash;
+        const summary = { verdict: r.verdict as any, confidence: r.confidence, conflict: Boolean(r.conflict), nearThreshold: Boolean(r.nearThreshold) };
+        return isConfidenceNotable(summary) ? (
+          <ConfidenceBar value={r.confidence} />
+        ) : (
+          <span className="tabular-nums text-xs text-muted-foreground">{Math.round(r.confidence * 100)}%</span>
+        );
+      },
+    },
+    {
+      key: "rationale",
+      header: "Why",
+      headerAr: "السبب",
+      render: (r) => {
+        const text = oneLine((r.rationaleEn as string | null) ?? undefined);
+        return text ? (
+          <p className="line-clamp-2 max-w-[38ch] text-xs text-muted-foreground" title={text}>{text}</p>
+        ) : (
+          dash
+        );
+      },
+    },
+    {
+      key: "reviewStatus",
+      header: "Review",
+      headerAr: "المراجعة",
+      // The Review Queue screen owns this workflow; empty until items are queued.
+      defaultHidden: true,
+      render: (r) =>
+        r.reviewStatus ? <Badge variant={r.reviewStatus === "pending" ? "warning" : "secondary"}>{String(r.reviewStatus)}</Badge> : dash,
+    },
     { key: "columnDataClassification", header: "Classification", headerAr: "التصنيف", render: (r) => <ClassificationBadge code={r.columnDataClassification as any} /> },
-    { key: "cdeFlag", header: "CDE", headerAr: "حرج", render: (r) => (r.cdeFlag ? <Badge variant="warning">CDE</Badge> : "—") },
+    { key: "dataType", header: "Type", headerAr: "النوع", sortable: true, defaultHidden: true },
+    { key: "assetName", header: "Asset", headerAr: "الأصل", sortable: true, defaultHidden: true },
+    { key: "cdeFlag", header: "CDE", headerAr: "حرج", defaultHidden: true, render: (r) => (r.cdeFlag ? <Badge variant="warning">CDE</Badge> : "—") },
   ];
 }

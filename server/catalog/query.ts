@@ -20,10 +20,31 @@ import {
   type SQL,
 } from "drizzle-orm";
 import { db } from "../db";
-import { assets, attributes } from "@shared/models/schema";
-import { SPECIAL_CATEGORY_CODE } from "@shared/lib/criteria";
+import {
+  assets,
+  attributes,
+  detections,
+  reviewItems,
+  type DetectionLayer,
+  type DetectionVerdict,
+} from "@shared/models/schema";
+import { SPECIAL_CATEGORY_CODE, type CriterionCode } from "@shared/lib/criteria";
 import type { CatalogScreen, FilterState } from "@shared/lib/filter-defs";
 import { getSetting } from "../reference-cache";
+import { detectionToSignal, mergeSignals } from "../pii-engine/merge";
+
+/** Fused detection state joined onto each attribute row of a catalog page. */
+export interface AttributeDetectionSummary {
+  verdict: DetectionVerdict | null;
+  criterion: CriterionCode | null;
+  confidence: number | null;
+  dataClassCode: string | null;
+  rationaleEn: string | null;
+  rationaleAr: string | null;
+  conflict: boolean;
+  nearThreshold: boolean;
+  reviewStatus: string | null;
+}
 
 export interface ListParams {
   filters: FilterState;
@@ -366,6 +387,11 @@ const ATTR_SORT: Record<string, any> = {
   dataType: attributes.dataType,
   assetName: assets.name,
   id: attributes.id,
+  piiType: attributes.piiName,
+  // Detection-derived sorts. Correlated subqueries rather than a join so the
+  // count query and the page query keep the same shape.
+  confidence: sql`(SELECT max(d.confidence) FROM detections d WHERE d.attribute_id = ${attributes.id})`,
+  criterion: sql`(SELECT min(d.criterion_code) FROM detections d WHERE d.attribute_id = ${attributes.id} AND d.criterion_code IS NOT NULL)`,
 };
 
 export async function listAttributes(params: ListParams) {
@@ -388,6 +414,7 @@ export async function listAttributes(params: ListParams) {
       isPrimaryKey: attributes.isPrimaryKey,
       selectedDataClassName: attributes.selectedDataClassName,
       columnDataClassification: attributes.columnDataClassification,
+      piiName: attributes.piiName,
       cdeFlag: attributes.cdeFlag,
       assetName: assets.name,
       businessDomain: assets.businessDomain,
@@ -405,7 +432,96 @@ export async function listAttributes(params: ListParams) {
     .innerJoin(assets, eq(attributes.assetId, assets.id))
     .where(where);
 
-  return { rows, total: n ?? 0, page, pageSize };
+  return { rows: await withDetectionSummary(rows), total: n ?? 0, page, pageSize };
+}
+
+/**
+ * Attach the fused PII verdict + review status to a page of attribute rows.
+ *
+ * The fusion is recomputed with the engine's own mergeSignals() rather than
+ * approximated in SQL — the merge is precedence- and conflict-aware and a
+ * hand-rolled `max(confidence)` would quietly disagree with the detection screen.
+ * Only the visible page (≤200 rows) is enriched, so this is two small queries.
+ */
+async function withDetectionSummary<T extends { id: number }>(rows: T[]): Promise<Array<T & AttributeDetectionSummary>> {
+  if (rows.length === 0) return [];
+  const ids = rows.map((r) => r.id);
+
+  const [detectionRows, reviewRows] = await Promise.all([
+    db.select().from(detections).where(inArray(detections.attributeId, ids)),
+    db
+      .select({ targetId: reviewItems.targetId, status: reviewItems.status })
+      .from(reviewItems)
+      .where(and(eq(reviewItems.targetType, "attribute"), inArray(reviewItems.targetId, ids))),
+  ]);
+
+  return attachDetectionSummary(rows, detectionRows, reviewRows, getSetting<number>("confidence_review_threshold") ?? 0.6);
+}
+
+/** Detection fields the summary needs — a structural subset of a `detections` row. */
+export interface SummaryDetection {
+  attributeId: number;
+  runId: string;
+  createdAt: Date;
+  layer: DetectionLayer;
+  verdict: DetectionVerdict;
+  criterionCode: CriterionCode | null;
+  dataClassCode: string | null;
+  confidence: number;
+  rationaleEn: string | null;
+  rationaleAr: string | null;
+}
+
+/** Pure half of {@link withDetectionSummary} — no db access, so it can be tested directly. */
+export function attachDetectionSummary<T extends { id: number }>(
+  rows: T[],
+  detectionRows: SummaryDetection[],
+  reviewRows: Array<{ targetId: number; status: string }>,
+  threshold = 0.6,
+): Array<T & AttributeDetectionSummary> {
+  // Scope to each attribute's OWN most recent run. A single global "latest run"
+  // would blank every column last analysed by an earlier run — this catalog has
+  // several — while merging across runs would fabricate conflicts from verdicts
+  // that a later pass already superseded.
+  const latestRunOf = new Map<number, { runId: string; at: number }>();
+  for (const d of detectionRows) {
+    const at = d.createdAt instanceof Date ? d.createdAt.getTime() : 0;
+    const best = latestRunOf.get(d.attributeId);
+    if (!best || at > best.at) latestRunOf.set(d.attributeId, { runId: d.runId, at });
+  }
+
+  const byAttribute = new Map<number, SummaryDetection[]>();
+  for (const d of detectionRows) {
+    if (d.runId !== latestRunOf.get(d.attributeId)?.runId) continue;
+    const list = byAttribute.get(d.attributeId) ?? [];
+    list.push(d);
+    byAttribute.set(d.attributeId, list);
+  }
+
+  const reviewByAttribute = new Map<number, string>();
+  for (const r of reviewRows) {
+    // Pending outranks a resolved row when an attribute has been queued twice.
+    if (r.status === "pending" || !reviewByAttribute.has(r.targetId)) reviewByAttribute.set(r.targetId, r.status);
+  }
+
+  return rows.map((row) => {
+    const layers = byAttribute.get(row.id);
+    const merged = layers?.length
+      ? mergeSignals(layers.map((l) => detectionToSignal(l as never)), threshold)
+      : null;
+    return {
+      ...row,
+      verdict: merged?.verdict ?? null,
+      criterion: merged?.criterion ?? null,
+      confidence: merged?.confidence ?? null,
+      dataClassCode: merged?.dataClassCode ?? null,
+      rationaleEn: merged?.rationaleEn ?? null,
+      rationaleAr: merged?.rationaleAr ?? null,
+      conflict: merged?.conflict ?? false,
+      nearThreshold: merged?.nearThreshold ?? false,
+      reviewStatus: reviewByAttribute.get(row.id) ?? null,
+    };
+  });
 }
 
 export async function resolveAttributeIds(filters: FilterState): Promise<number[]> {

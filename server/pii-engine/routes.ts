@@ -47,9 +47,20 @@ export function registerPiiRoutes(app: Express): void {
       const minConfidence = q.minConfidence ? Number(q.minConfidence) : undefined;
       const assetId = q.assetId ? Number(q.assetId) : undefined;
       const runId = typeof q.runId === "string" ? q.runId : undefined;
+      const search = typeof q.search === "string" ? q.search : undefined;
+      // Paginated: a full run is thousands of rows and the table used to render
+      // every one of them into the DOM at once.
+      const page = Math.max(1, Number(q.page) || 1);
+      const pageSize = Math.min(Math.max(1, Number(q.pageSize) || 50), 200);
 
-      const results = await getResults({ runId, criterion, verdict, minConfidence, assetId });
-      res.json({ runId: runId ?? (await getLatestRunId()), count: results.length, results });
+      const results = await getResults({ runId, criterion, verdict, minConfidence, assetId, search });
+      res.json({
+        runId: runId ?? (await getLatestRunId()),
+        count: results.length,
+        page,
+        pageSize,
+        results: results.slice((page - 1) * pageSize, page * pageSize),
+      });
     }),
   );
 
