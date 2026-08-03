@@ -18,8 +18,15 @@ describe("import batch filter", () => {
     expect(def?.control).toBe("multiselect");
   });
 
-  it("is offered on the assets screen too", () => {
-    expect(ASSET_FILTERS.find((d) => d.key === "importBatch")).toBeDefined();
+  it("is offered on the assets screen too, also in the default set", () => {
+    const def = ASSET_FILTERS.find((d) => d.key === "importBatch");
+    expect(def).toBeDefined();
+    expect(def?.advanced).toBeFalsy();
+  });
+
+  it("replaces the raw Catalog Id UUID on the assets screen", () => {
+    // Both split the catalog identically, but only one is readable.
+    expect(ASSET_FILTERS.map((d) => d.key)).not.toContain("catalogId");
   });
 
   it("is not gated behind a feature-availability probe", () => {

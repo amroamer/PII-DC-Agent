@@ -119,47 +119,56 @@ const REVIEW_STATUS_OPTIONS = [
   opt("overridden", "Overridden", "متجاوَز"),
 ];
 
+/**
+ * Asset filters, same treatment as ATTRIBUTE_FILTERS: a small default set, the
+ * specialist rest behind "More filters", and five removed because they cannot
+ * narrow anything against a real catalog —
+ *   storage / backupFrequency — one distinct value across all 1,179 assets.
+ *   classificationSource      — no asset-scope classification rows are written.
+ *   containsConflicts         — needs two layers to disagree; only one produces
+ *                               a signal, so no asset ever qualifies.
+ *   catalogId                 — a raw UUID that means nothing to a steward, and
+ *                               fully superseded by the labelled Catalog
+ *                               (import) filter directly above it.
+ */
 export const ASSET_FILTERS: FilterDefinition[] = [
+  // --- default set --------------------------------------------------------
   { key: "search", labelEn: "Search", labelAr: "بحث", group: "identity", control: "text" },
-  { key: "ikcAssetId", labelEn: "Asset Id", labelAr: "معرّف الأصل", group: "identity", control: "text" },
   { key: "name", labelEn: "Name", labelAr: "الاسم", group: "identity", control: "text" },
-  { key: "assetType", labelEn: "Asset Type", labelAr: "نوع الأصل", group: "identity", control: "multiselect", optionsSource: "distinct" },
   { key: "importBatch", labelEn: "Catalog (import)", labelAr: "الكتالوج (الاستيراد)", group: "identity", control: "multiselect", optionsSource: "distinct" },
-  { key: "catalogId", labelEn: "Catalog Id", labelAr: "معرّف الكتالوج", group: "identity", control: "multiselect", optionsSource: "distinct" },
-
+  { key: "assetType", labelEn: "Asset Type", labelAr: "نوع الأصل", group: "identity", control: "multiselect", optionsSource: "distinct" },
   { key: "businessDomain", labelEn: "Business Domain", labelAr: "المجال التجاري", group: "business", control: "multiselect", optionsSource: "distinct" },
-  { key: "subjectArea", labelEn: "Subject Area", labelAr: "مجال الموضوع", group: "business", control: "multiselect", optionsSource: "distinct" },
-  { key: "department", labelEn: "Department", labelAr: "الإدارة", group: "business", control: "multiselect", optionsSource: "distinct" },
-  { key: "sector", labelEn: "Sector", labelAr: "القطاع", group: "business", control: "multiselect", optionsSource: "distinct" },
-  { key: "ownerId", labelEn: "Owner", labelAr: "المالك", group: "business", control: "multiselect", optionsSource: "distinct" },
-  { key: "stewards", labelEn: "Data Stewards", labelAr: "أمناء البيانات", group: "business", control: "multiselect", optionsSource: "distinct" },
-  { key: "creatorId", labelEn: "Creator", labelAr: "المُنشئ", group: "business", control: "multiselect", optionsSource: "distinct" },
-
-  { key: "tableType", labelEn: "Table Type", labelAr: "نوع الجدول", group: "technical", control: "multiselect", optionsSource: "distinct" },
-  { key: "tableSchema", labelEn: "Table Schema", labelAr: "مخطط الجدول", group: "technical", control: "multiselect", optionsSource: "distinct" },
-  { key: "storage", labelEn: "Storage", labelAr: "التخزين", group: "technical", control: "multiselect", optionsSource: "distinct" },
-  { key: "connectionId", labelEn: "Connection Id", labelAr: "معرّف الاتصال", group: "technical", control: "multiselect", optionsSource: "distinct" },
-  { key: "numColumns", labelEn: "Number of columns", labelAr: "عدد الأعمدة", group: "technical", control: "numeric-range", min: 0 },
-  { key: "numChildren", labelEn: "Number of children", labelAr: "عدد التوابع", group: "technical", control: "numeric-range", min: 0 },
-
-  { key: "qualityScore", labelEn: "Quality score", labelAr: "درجة الجودة", group: "quality", control: "numeric-range", min: 0, max: 100 },
-  { key: "analysedRowCount", labelEn: "Analysed row count", labelAr: "عدد الصفوف المحلّلة", group: "quality", control: "numeric-range", min: 0 },
-
   { key: "assetClassification", labelEn: "Asset Classification", labelAr: "تصنيف الأصل", group: "governance", control: "multiselect", optionsSource: "static", staticOptions: CLASSIFICATION_OPTIONS },
-  { key: "classificationSource", labelEn: "Classification source", labelAr: "مصدر التصنيف", group: "governance", control: "enum", optionsSource: "static", staticOptions: CLASSIFICATION_SOURCE_OPTIONS },
   { key: "piiFlag", labelEn: "PII flag", labelAr: "علامة البيانات الشخصية", group: "governance", control: "tristate" },
   { key: "cdeFlag", labelEn: "Critical Data Element", labelAr: "عنصر بيانات حرج", group: "governance", control: "tristate" },
-  { key: "retentionPeriod", labelEn: "Retention Period", labelAr: "مدة الاحتفاظ", group: "governance", control: "multiselect", optionsSource: "distinct" },
-  { key: "backupFrequency", labelEn: "Backup Frequency", labelAr: "تكرار النسخ الاحتياطي", group: "governance", control: "multiselect", optionsSource: "distinct" },
-
-  { key: "containsConflicts", labelEn: "Contains layer conflicts", labelAr: "يحتوي على تعارضات", group: "analysis", control: "boolean" },
-  { key: "containsUncertain", labelEn: "Contains uncertain verdicts", labelAr: "يحتوي على قرارات غير مؤكدة", group: "analysis", control: "boolean" },
-
+  { key: "tableSchema", labelEn: "Table Schema", labelAr: "مخطط الجدول", group: "technical", control: "multiselect", optionsSource: "distinct" },
+  { key: "numColumns", labelEn: "Number of columns", labelAr: "عدد الأعمدة", group: "technical", control: "numeric-range", min: 0 },
+  { key: "ikcAssetId", labelEn: "Asset Id", labelAr: "معرّف الأصل", group: "identity", control: "text" },
   { key: "hasEnDescription", labelEn: "English description present", labelAr: "وصف إنجليزي موجود", group: "completeness", control: "exists" },
-  { key: "hasArDescription", labelEn: "Arabic description present", labelAr: "وصف عربي موجود", group: "completeness", control: "exists" },
-  { key: "hasOwner", labelEn: "Owner assigned", labelAr: "مالك معيّن", group: "completeness", control: "exists" },
-  { key: "hasStewards", labelEn: "Steward assigned", labelAr: "أمين معيّن", group: "completeness", control: "exists" },
-  { key: "hasBusinessDomain", labelEn: "Business domain assigned", labelAr: "مجال معيّن", group: "completeness", control: "exists" },
+
+  // --- advanced -----------------------------------------------------------
+  { key: "subjectArea", labelEn: "Subject Area", labelAr: "مجال الموضوع", group: "business", control: "multiselect", optionsSource: "distinct", advanced: true },
+  { key: "department", labelEn: "Department", labelAr: "الإدارة", group: "business", control: "multiselect", optionsSource: "distinct", advanced: true },
+  { key: "sector", labelEn: "Sector", labelAr: "القطاع", group: "business", control: "multiselect", optionsSource: "distinct", advanced: true },
+  { key: "ownerId", labelEn: "Owner", labelAr: "المالك", group: "business", control: "multiselect", optionsSource: "distinct", advanced: true },
+  { key: "stewards", labelEn: "Data Stewards", labelAr: "أمناء البيانات", group: "business", control: "multiselect", optionsSource: "distinct", advanced: true },
+  { key: "creatorId", labelEn: "Creator", labelAr: "المُنشئ", group: "business", control: "multiselect", optionsSource: "distinct", advanced: true },
+
+  { key: "tableType", labelEn: "Table Type", labelAr: "نوع الجدول", group: "technical", control: "multiselect", optionsSource: "distinct", advanced: true },
+  { key: "connectionId", labelEn: "Connection Id", labelAr: "معرّف الاتصال", group: "technical", control: "multiselect", optionsSource: "distinct", advanced: true },
+  { key: "numChildren", labelEn: "Number of children", labelAr: "عدد التوابع", group: "technical", control: "numeric-range", min: 0, advanced: true },
+
+  { key: "qualityScore", labelEn: "Quality score", labelAr: "درجة الجودة", group: "quality", control: "numeric-range", min: 0, max: 100, advanced: true },
+  { key: "analysedRowCount", labelEn: "Analysed row count", labelAr: "عدد الصفوف المحلّلة", group: "quality", control: "numeric-range", min: 0, advanced: true },
+
+  { key: "retentionPeriod", labelEn: "Retention Period", labelAr: "مدة الاحتفاظ", group: "governance", control: "multiselect", optionsSource: "distinct", advanced: true },
+
+  { key: "containsUncertain", labelEn: "Contains uncertain verdicts", labelAr: "يحتوي على قرارات غير مؤكدة", group: "analysis", control: "boolean", advanced: true },
+
+  { key: "hasArDescription", labelEn: "Arabic description present", labelAr: "وصف عربي موجود", group: "completeness", control: "exists", advanced: true },
+  { key: "hasOwner", labelEn: "Owner assigned", labelAr: "مالك معيّن", group: "completeness", control: "exists", advanced: true },
+  { key: "hasStewards", labelEn: "Steward assigned", labelAr: "أمين معيّن", group: "completeness", control: "exists", advanced: true },
+  { key: "hasBusinessDomain", labelEn: "Business domain assigned", labelAr: "مجال معيّن", group: "completeness", control: "exists", advanced: true },
 ];
 
 /**
