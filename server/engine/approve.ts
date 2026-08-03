@@ -85,7 +85,14 @@ async function writePiiDetectionForItem(
   },
 ): Promise<void> {
   const { run, item, attr } = args;
-  const overrideVerdict = (item.overrideValue?.verdict as string | undefined) ?? item.verdict ?? "uncertain";
+  const rawVerdict = (item.overrideValue?.verdict as string | undefined) ?? item.verdict ?? "uncertain";
+  // Invariant: a persisted `pii` detection ALWAYS carries the criterion it was
+  // matched on. Without one the row cannot be filtered, exported or defended —
+  // it just renders as a blank "Criteria Matched" cell. The engine already
+  // downgrades these at inference (see infer.ts); this is the backstop for the
+  // other paths into this table, notably a steward override that flips a verdict
+  // to pii without naming a criterion.
+  const overrideVerdict = rawVerdict === "pii" && !args.criterionCode ? "uncertain" : rawVerdict;
   const provenance = {
     engineVersion: run.engineVersion ?? "0.1.0",
     runId: String(run.id),

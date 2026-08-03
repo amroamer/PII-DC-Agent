@@ -320,12 +320,28 @@ function assembleInference(
     }
   }
 
+  // A "pii" verdict with NO applied criterion is not a finding — it is an
+  // unattributed assertion. It cannot be defended in an export, filtered by
+  // criterion, or actioned by a steward, and it is what produced 145 blank
+  // "Criteria Matched" cells: the model judged a column personal for a reason
+  // (contextual, regulatory, special-category) that the run was not scoped to
+  // score, so every in-scope criterion came back false.
+  //
+  // Held as `uncertain` rather than `not_pii` on purpose: several of these are
+  // genuinely personal (employee photo, religion, passport image), so asserting
+  // "not personal" would be the more dangerous error. Uncertain keeps them out
+  // of the PII inventory and routes them to a steward.
+  const unattributedPii = verdict === "pii" && appliedCodes.length === 0;
+  if (unattributedPii) verdict = "uncertain";
+
   return {
     verdict,
     suggestedClassCode,
     confidence,
     rationaleEn: llmFailed
       ? "AI inference was unavailable for this attribute (rate limit / timeout / unreachable); held as uncertain for steward review — not auto-classified."
+      : unattributedPii
+      ? `Assessed as personal, but no criterion in this run's scope (${ctx.activeCriteria.join(", ")}) applies — the reason falls outside it. Held as uncertain for steward review rather than recorded as PII without a criterion. Engine rationale: ${llm?.rationaleEn ?? merged.rationaleEn}`
       : divergence
         ? `Self-consistency divergence across ${ctx.selfConsistencySamples} samples (${divergence}); held as uncertain.`
         : (metadataConflict ? "Data-quality issue: the column name and its description describe different things, so the metadata is unreliable — held for steward review (fix the description). " : "") +
@@ -333,8 +349,10 @@ function assembleInference(
     rationaleAr: ar(
       llmFailed
         ? "تعذّر إجراء الاستدلال بالذكاء الاصطناعي لهذه السمة (حد المعدل / مهلة)؛ مُعلّقة للمراجعة."
-        : (metadataConflict ? "مشكلة جودة بيانات: اسم العمود ووصفه غير متطابقين، لذا البيانات الوصفية غير موثوقة — مُعلّقة للمراجعة. " : "") +
-          (llm?.rationaleAr ?? merged.rationaleAr),
+        : unattributedPii
+          ? `تم تقييمها كبيانات شخصية، لكن لا ينطبق أي معيار ضمن نطاق هذا التشغيل؛ مُعلّقة للمراجعة بدلاً من تسجيلها كبيانات شخصية بلا معيار. ${llm?.rationaleAr ?? merged.rationaleAr}`
+          : (metadataConflict ? "مشكلة جودة بيانات: اسم العمود ووصفه غير متطابقين، لذا البيانات الوصفية غير موثوقة — مُعلّقة للمراجعة. " : "") +
+            (llm?.rationaleAr ?? merged.rationaleAr),
     ),
     sourceLayers: [
       ...merged.contributingLayers,
