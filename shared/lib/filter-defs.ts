@@ -104,12 +104,9 @@ const SOURCE_LAYER_OPTIONS = [
   opt("llm", "LLM", "النموذج اللغوي"),
 ];
 
-const CLASSIFICATION_SOURCE_OPTIONS = [
-  opt("engine", "Engine", "المحرك"),
-  opt("rollup", "Rollup", "التجميع"),
-  opt("override", "Steward override", "تجاوز أمين البيانات"),
-  opt("none", "Not classified", "غير مصنّف"),
-];
+// CLASSIFICATION_SOURCE_OPTIONS removed with the classificationSource filter it
+// fed — no classification rows are written at either scope, so it could only
+// ever match nothing. Restore both together if that changes.
 
 const REVIEW_STATUS_OPTIONS = [
   opt("not_queued", "Not queued", "غير مدرج"),
