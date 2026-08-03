@@ -21,6 +21,18 @@ export async function getAttributeKpis(filters: FilterState) {
   const total = await scalar(db.select({ n: sql<number>`count(*)::int` }).from(attributes));
   const tablesTotal = await scalar(db.select({ n: sql<number>`count(*)::int` }).from(assets));
 
+  /**
+   * Coverage scope: the filters MINUS the verdict facet.
+   *
+   * "Analysed · N never" answers "how much of what I am looking at has been
+   * looked at" — and selecting verdicts is not a change of subject, it is a
+   * change of answer. Scoped to the verdict-filtered view the question becomes
+   * circular: picking pii/not_pii/uncertain excludes every un-analysed column
+   * by construction, so the tile reported "0 never" while 206 columns of the
+   * selected catalog had never been analysed.
+   */
+  const coverageIds = filters.verdict === undefined ? ids : await resolveAttributeIds({ ...filters, verdict: undefined });
+
   if (ids.length === 0) {
     return {
       inView: 0,
@@ -30,6 +42,8 @@ export async function getAttributeKpis(filters: FilterState) {
       pii: 0,
       specialCategory: 0,
       analysed: 0,
+      notAnalysed: coverageIds.length,
+      coverageScope: coverageIds.length,
       conflicts: 0,
       pendingReview: 0,
       uncertain: 0,
@@ -53,8 +67,18 @@ export async function getAttributeKpis(filters: FilterState) {
     db.select({ verdict: detections.verdict, n: sql<number>`count(distinct ${detections.attributeId})::int` }).from(detections).where(detScope).groupBy(detections.verdict),
     db.select({ criterion: detections.criterionCode, n: sql<number>`count(distinct ${detections.attributeId})::int` }).from(detections).where(detScope).groupBy(detections.criterionCode),
     db.select({ level: classifications.levelCode, n: sql<number>`count(distinct ${classifications.targetId})::int` }).from(classifications).where(and(eq(classifications.scope, "attribute"), isNull(classifications.supersededBy), clsScope)).groupBy(classifications.levelCode),
-    db.select({ avg: sql<number>`coalesce(avg(${detections.confidence}), 0)::float`, below: sql<number>`count(*) filter (where ${detections.confidence} < ${threshold})::int` }).from(detections).where(and(detScope, eq(detections.verdict, "pii"))),
-    scalar(db.select({ n: sql<number>`count(distinct ${detections.attributeId})::int` }).from(detections).where(detScope)),
+    // Average over EVERY detection in view, not just the pii ones. Scoped to
+    // `pii` it read 0% whenever the view had no PII findings — filtering to
+    // "uncertain" showed "Avg conf. 0%" beside a table of 60-95% rows.
+    db.select({ avg: sql<number>`coalesce(avg(${detections.confidence}), 0)::float`, below: sql<number>`count(*) filter (where ${detections.confidence} < ${threshold})::int` }).from(detections).where(detScope),
+    // Analysed is measured over the COVERAGE scope, so the pair (analysed,
+    // never) always sums to the columns matching the non-verdict filters.
+    scalar(
+      db
+        .select({ n: sql<number>`count(distinct ${detections.attributeId})::int` })
+        .from(detections)
+        .where(coverageIds.length >= total ? sql`true` : inArray(detections.attributeId, coverageIds)),
+    ),
     scalar(db.select({ n: sql<number>`count(*)::int` }).from(reviewItems).where(and(eq(reviewItems.targetType, "attribute"), eq(reviewItems.status, "pending"), rvScope))),
     // Tables (assets) with at least one analysed column.
     scalar(db.select({ n: sql<number>`count(distinct ${attributes.assetId})::int` }).from(attributes).innerJoin(detections, eq(detections.attributeId, attributes.id)).where(scopeAll ? sql`true` : inArray(attributes.id, ids))),
@@ -106,6 +130,9 @@ export async function getAttributeKpis(filters: FilterState) {
     total,
     tablesTotal,
     tablesAnalysed,
+    /** Columns matching the filters ignoring verdict — `analysed + notAnalysed`. */
+    coverageScope: coverageIds.length,
+    notAnalysed: Math.max(0, coverageIds.length - analysed),
     pii: byVerdict.pii ?? 0,
     specialCategory: criteriaDistribution.SPECIAL_CATEGORY ?? 0,
     analysed,

@@ -210,23 +210,23 @@ function FilterField({
   // multiselect
   return (
     <Field>
-      <MultiSelectFilter screen={screen} def={def} value={(value as string[]) ?? []} onChange={onChange} label={label} />
+      <MultiSelectFilter screen={screen} def={def} value={(value as string[]) ?? []} onChange={onChange} />
     </Field>
   );
 }
 
+// No `label` prop: the field label is rendered above the control now, and the
+// trigger reports the selection instead of repeating it.
 function MultiSelectFilter({
   screen,
   def,
   value,
   onChange,
-  label,
 }: {
   screen: Screen;
   def: FilterDefinition;
   value: string[];
   onChange: (v: unknown) => void;
-  label: string;
 }) {
   const { lang } = useLanguage();
   const [open, setOpen] = useState(false);

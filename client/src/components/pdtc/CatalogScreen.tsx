@@ -385,7 +385,11 @@ function KpiStrip({
           { label: lang === "ar" ? "في العرض" : "In view", value: `${n("inView")}`, sub: `${lang === "ar" ? "من" : "of"} ${n("total")}` },
           { label: "PII", value: `${n("pii")}`, sub: `${pct(n("pii"), n("analysed"))}%`, apply: () => onApply("verdict", ["pii"]) },
           { label: lang === "ar" ? "فئة خاصة" : "Special", value: `${n("specialCategory")}`, apply: () => onApply("specialCategory", true) },
-          { label: lang === "ar" ? "محلّلة" : "Analysed", value: `${n("analysed")}`, sub: `${n("total") - n("analysed")} ${lang === "ar" ? "لم تُحلّل" : "never"}` },
+          // Coverage, measured over the filters MINUS the verdict facet, so the
+          // two numbers always sum to the selected catalog. Scoped to the
+          // verdict-filtered view it was circular — picking pii/not_pii/uncertain
+          // excludes un-analysed columns by construction, so it read "0 never".
+          { label: lang === "ar" ? "محلّلة" : "Analysed", value: `${n("analysed")}`, sub: `${n("notAnalysed")} ${lang === "ar" ? "لم تُحلّل" : "never"}` },
           { label: lang === "ar" ? "معلّقة" : "Pending", value: `${n("pendingReview")}`, apply: () => onApply("reviewStatus", "pending") },
           { label: lang === "ar" ? "غير مؤكد" : "Uncertain", value: `${n("uncertain")}`, apply: () => onApply("verdict", ["uncertain"]) },
           { label: lang === "ar" ? "متوسط الثقة" : "Avg conf.", value: `${Math.round(n("avgConfidence") * 100)}%`, sub: `${n("belowThreshold")} ${lang === "ar" ? "دون العتبة" : "below"}` },
