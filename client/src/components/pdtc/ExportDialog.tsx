@@ -6,6 +6,7 @@ import { useLanguage } from "@/hooks/useLanguage";
 import { useToast } from "@/hooks/use-toast";
 import type { Selection } from "@/hooks/useSelection";
 import type { CatalogScreen, FilterState } from "@shared/lib/filter-defs";
+import { cn } from "@/lib/utils";
 import { Modal } from "./Modal";
 import { Btn } from "./Btn";
 import { Button } from "@/components/ui/button";
@@ -65,6 +66,50 @@ export function ExportDialog({
   const { toast } = useToast();
   const [scopeKind, setScopeKind] = useState<"selection" | "filter" | "all">(selection ? "selection" : "filter");
   const [columns, setColumns] = useState<string[]>(PRESETS["steward-review"]);
+  // "report" = pick PDTC columns; "round-trip" = the uploaded IKC file returned
+  // with its Pii / Classification columns filled in.
+  const [mode, setMode] = useState<"report" | "round-trip">("report");
+
+  const scopeBody = () => ({
+    screen,
+    scope: {
+      kind: scopeKind,
+      selection: scopeKind === "selection" ? selection : undefined,
+      filters: scopeKind === "filter" ? filters : undefined,
+    },
+    format: "xlsx" as const,
+  });
+
+  const roundTripMutation = useMutation({
+    mutationFn: async () => {
+      // Streams the workbook straight back rather than creating an export batch —
+      // this is the source file returned, not a PDTC report to persist.
+      const res = await fetch("/api/exports/round-trip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(scopeBody()),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.message ?? "Export failed");
+      const rows = res.headers.get("X-PDTC-Rows") ?? "?";
+      const filled = res.headers.get("X-PDTC-Filled") ?? "0";
+      const blob = await res.blob();
+      return { blob, rows, filled };
+    },
+    onSuccess: ({ blob, rows, filled }) => {
+      toast({ title: "Export ready", description: `${rows} rows · ${filled} with engine findings` });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `pdtc-ikc-with-pii-${rows}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      onOpenChange(false);
+    },
+    onError: (err: Error) => toast({ variant: "destructive", title: "Export failed", description: err.message }),
+  });
 
   const exportMutation = useMutation({
     mutationFn: () =>
@@ -102,7 +147,12 @@ export function ExportDialog({
       footer={
         <>
           <Button variant="outline" onClick={() => onOpenChange(false)}>{lang === "ar" ? "إلغاء" : "Cancel"}</Button>
-          <Btn icon={<Download className="h-4 w-4" />} loading={exportMutation.isPending} disabled={columns.length === 0} onClick={() => exportMutation.mutate()}>
+          <Btn
+            icon={<Download className="h-4 w-4" />}
+            loading={exportMutation.isPending || roundTripMutation.isPending}
+            disabled={mode === "report" && columns.length === 0}
+            onClick={() => (mode === "round-trip" ? roundTripMutation.mutate() : exportMutation.mutate())}
+          >
             {lang === "ar" ? "إنشاء" : "Generate"}
           </Btn>
         </>
@@ -119,6 +169,33 @@ export function ExportDialog({
         </div>
 
         <div>
+          <Label className="mb-1 block text-sm">{lang === "ar" ? "نوع الملف" : "What to export"}</Label>
+          <div className="space-y-2">
+            <div className="flex items-start gap-2 rounded-md border p-2 text-sm">
+              <input id="export-mode-report" type="radio" className="mt-1" checked={mode === "report"} onChange={() => setMode("report")} />
+              <label htmlFor="export-mode-report" className="cursor-pointer">
+                <span className="font-medium">{lang === "ar" ? "تقرير PDTC" : "PDTC report"}</span>
+                <span className="block text-xs text-muted-foreground">
+                  {lang === "ar" ? "اختر أعمدة PDTC أدناه." : "Pick the PDTC columns below."}
+                </span>
+              </label>
+            </div>
+            <div className="flex items-start gap-2 rounded-md border p-2 text-sm">
+              <input id="export-mode-roundtrip" type="radio" className="mt-1" checked={mode === "round-trip"} onChange={() => setMode("round-trip")} />
+              <label htmlFor="export-mode-roundtrip" className="cursor-pointer">
+                <span className="font-medium">{lang === "ar" ? "ملف IKC الأصلي + النتائج" : "Original IKC file + PII"}</span>
+                <span className="block text-xs text-muted-foreground">
+                  {lang === "ar"
+                    ? "ملفك كما تم رفعه، مع تعبئة أعمدة البيانات الشخصية والتصنيف — جاهز للإعادة إلى IKC."
+                    : "Your uploaded file with its PII and Classification columns filled in — ready to go back into IKC."}
+                </span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        {mode === "report" && (
+        <div>
           <Label className="mb-1 block text-sm">{lang === "ar" ? "الإعدادات المسبقة" : "Presets"}</Label>
           <div className="flex flex-wrap gap-2">
             {Object.keys(PRESETS).map((p) => (
@@ -126,8 +203,9 @@ export function ExportDialog({
             ))}
           </div>
         </div>
+        )}
 
-        <div className="max-h-56 space-y-3 overflow-y-auto rounded-md border p-3">
+        <div className={cn("max-h-56 space-y-3 overflow-y-auto rounded-md border p-3", mode !== "report" && "hidden")}>
           {Object.entries(COLUMN_GROUPS).map(([group, cols]) => (
             <div key={group}>
               <p className="mb-1 text-xs font-semibold uppercase text-muted-foreground">{group}</p>
