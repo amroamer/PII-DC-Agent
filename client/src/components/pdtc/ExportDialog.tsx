@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Download } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { useLanguage } from "@/hooks/useLanguage";
@@ -70,15 +70,36 @@ export function ExportDialog({
   // with its Pii / Classification columns filled in.
   const [mode, setMode] = useState<"report" | "round-trip">("report");
 
-  const scopeBody = () => ({
-    screen,
-    scope: {
-      kind: scopeKind,
-      selection: scopeKind === "selection" ? selection : undefined,
-      filters: scopeKind === "filter" ? filters : undefined,
-    },
-    format: "xlsx" as const,
+  // Which loaded catalog to export. Defaults to whatever the page is already
+  // filtered to, so the dialog agrees with the screen behind it, but can be
+  // changed here — exporting is usually a standalone act and having to go and
+  // set the page filter first was the wrong order of operations.
+  const filteredCatalogs = (filters.importBatch as string[] | undefined) ?? [];
+  const [catalog, setCatalog] = useState<string>(filteredCatalogs.length === 1 ? filteredCatalogs[0] : "");
+  const catalogQuery = useQuery<Array<{ value: string; count: number; label?: string }>>({
+    queryKey: [`/api/catalog/filter-options?screen=${screen}&key=importBatch`],
+    enabled: open,
   });
+
+  /**
+   * Catalog choice is applied ON TOP of the scope, not beside it: picking one
+   * with "Everything" means everything in that catalog, which is what a steward
+   * means by it. Leaving it on "All catalogs" preserves the previous behaviour.
+   */
+  const scopeBody = () => {
+    const base = scopeKind === "filter" ? { ...filters } : {};
+    if (catalog) base.importBatch = [catalog];
+    const scoped = scopeKind === "selection" || Object.keys(base).length === 0;
+    return {
+      screen,
+      scope: {
+        kind: scopeKind === "selection" ? "selection" : scoped ? "all" : "filter",
+        selection: scopeKind === "selection" ? selection : undefined,
+        filters: scopeKind === "selection" || scoped ? undefined : base,
+      },
+      format: "xlsx" as const,
+    };
+  };
 
   const roundTripMutation = useMutation({
     mutationFn: async () => {
@@ -114,14 +135,8 @@ export function ExportDialog({
   const exportMutation = useMutation({
     mutationFn: () =>
       apiRequest<{ batchId: number; filename: string; rowCount: number }>("POST", "/api/exports", {
-        screen,
-        scope: {
-          kind: scopeKind,
-          selection: scopeKind === "selection" ? selection : undefined,
-          filters: scopeKind === "filter" ? filters : undefined,
-        },
+        ...scopeBody(),
         columns,
-        format: "xlsx",
       }),
     onSuccess: (res) => {
       toast({ title: "Export ready", description: `${res.rowCount} rows` });
@@ -167,6 +182,32 @@ export function ExportDialog({
             <Radio checked={scopeKind === "all"} onChange={() => setScopeKind("all")} label={lang === "ar" ? "كل شيء" : "Everything"} />
           </div>
         </div>
+
+        {/* Catalog is its own choice rather than something you had to go and set
+            on the page behind this dialog. Hidden when only one catalog exists —
+            a picker with a single option is just a label. */}
+        {scopeKind !== "selection" && (catalogQuery.data?.length ?? 0) > 1 && (
+          <div>
+            <Label htmlFor="export-catalog" className="mb-1 block text-sm">
+              {lang === "ar" ? "الكتالوج (الاستيراد)" : "Catalog (import)"}
+            </Label>
+            <select
+              id="export-catalog"
+              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+              value={catalog}
+              onChange={(e) => setCatalog(e.target.value)}
+            >
+              <option value="">
+                {lang === "ar" ? "كل الكتالوجات" : "All catalogs"}
+              </option>
+              {(catalogQuery.data ?? []).map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label ?? o.value} ({o.count.toLocaleString()})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         <div>
           <Label className="mb-1 block text-sm">{lang === "ar" ? "نوع الملف" : "What to export"}</Label>
